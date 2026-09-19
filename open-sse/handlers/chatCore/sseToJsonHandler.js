@@ -1,6 +1,7 @@
 import { convertResponsesStreamToJson } from "../../transformer/streamToJsonConverter.js";
 import { createErrorResult } from "../../utils/error.js";
-import { HTTP_STATUS } from "../../config/runtimeConfig.js";
+import { HTTP_STATUS, STREAM_STALL_TIMEOUT_MS } from "../../config/runtimeConfig.js";
+import { drainWithTTFT, resolveLatency } from "./sseToJsonDrain.js";
 import { FORMATS } from "../../translator/formats.js";
 import { PROVIDERS } from "../../config/providers.js";
 import { buildRequestDetail, extractRequestConfig, saveUsageStats, formatDoneLine } from "./requestDetail.js";
@@ -179,7 +180,7 @@ export function parseSSEToOpenAIResponse(rawSSE, fallbackModel) {
  * Handle case: provider forced streaming but client wants JSON.
  * Supports both Codex/Responses API SSE and standard Chat Completions SSE.
  */
-export async function handleForcedSSEToJson({ providerResponse, sourceFormat, targetFormat, provider, model, body, stream, translatedBody, finalBody, requestStartTime, connectionId, apiKey, clientRawRequest, onRequestSuccess, customToolNames, trackDone, appendLog, reqTag, log }) {
+export async function handleForcedSSEToJson({ providerResponse, sourceFormat, targetFormat, provider, model, body, stream, translatedBody, finalBody, requestStartTime, connectionId, apiKey, clientRawRequest, onRequestSuccess, customToolNames, trackDone, appendLog, reqTag, log, stallTimeoutMs = STREAM_STALL_TIMEOUT_MS, timeoutMs, now = Date.now, signal }) {
   const contentType = providerResponse.headers.get("content-type") || "";
   const isSSE = contentType.includes("text/event-stream") || (contentType === "" && isResponsesProvider(provider));
   if (!isSSE) return null; // not handled here
@@ -192,6 +193,25 @@ export async function handleForcedSSEToJson({ providerResponse, sourceFormat, ta
     providerRequest: finalBody || translatedBody || null
   };
 
+  // Drain the SSE ourselves so we can stamp a real TTFT on the first byte and
+  // abort a wedged upstream — neither of which the old .text() call could do.
+  // `timeoutMs` is accepted as a test/override alias for the idle window.
+  const idleTimeoutMs = Number.isFinite(timeoutMs) ? timeoutMs : stallTimeoutMs;
+  const drained = await drainWithTTFT({
+    body: providerResponse.body,
+    requestStartTime,
+    signal,
+    now,
+    stallTimeoutMs: idleTimeoutMs
+  });
+  if (drained.stalled) {
+    return createErrorResult(HTTP_STATUS.GATEWAY_TIMEOUT, "Upstream stream stalled while assembling non-streaming response");
+  }
+  const sseText = drained.text;
+  // buildRequestDetail's ctx carries the latency; keep it alongside so both
+  // branches below record the same measured values.
+  const measuredTtft = drained.ttft;
+
   // Codex/Responses API SSE path
   // Branch on the UPSTREAM format (targetFormat = format we spoke to the provider in),
   // not the client format: a Responses-API client behind a chat-native forced-streaming
@@ -199,13 +219,17 @@ export async function handleForcedSSEToJson({ providerResponse, sourceFormat, ta
   const isCodexResponsesApi = isResponsesProvider(provider) || targetFormat === FORMATS.OPENAI_RESPONSES;
   if (isCodexResponsesApi) {
     try {
-      const jsonResponse = await convertResponsesStreamToJson(providerResponse.body);
+      // The body was already drained above for TTFT; parse the buffered text
+      // rather than re-reading the (now consumed) stream.
+      const jsonResponse = await convertResponsesStreamToJson(
+        new Response(sseText, { headers: { "content-type": "text/event-stream" } }).body
+      );
       if (onRequestSuccess) await onRequestSuccess();
 
       const usage = jsonResponse.usage || {};
       appendLog({ tokens: usage, status: "200 OK" });
       saveUsageStats({ provider, model, tokens: usage, connectionId, apiKey, endpoint: clientRawRequest?.endpoint, silent: true });
-      if (log?.line) log.line(reqTag, "📊", formatDoneLine({ usage, latency: { total: Date.now() - requestStartTime } }));
+      if (log?.line) log.line(reqTag, "📊", formatDoneLine({ usage, latency: resolveLatency({ requestStartTime, ttft: measuredTtft, now }) }));
 
       // Same cache-inclusive total for the recorded detail, so the DB and the
       // client-facing usage can never disagree.
@@ -213,11 +237,10 @@ export async function handleForcedSSEToJson({ providerResponse, sourceFormat, ta
         + (usage.cache_read_input_tokens || usage.cached_tokens || 0)
         + (usage.cache_creation_input_tokens || 0);
       const { msgItem, textContent } = pickAssistantMessageForChatCompletion(jsonResponse.output);
-      const totalLatency = Date.now() - requestStartTime;
 
       saveRequestDetail(buildRequestDetail({
         ...ctx,
-        latency: { ttft: totalLatency, total: totalLatency },
+        latency: resolveLatency({ requestStartTime, ttft: measuredTtft, now }),
         tokens: { prompt_tokens: inTokensForLog, completion_tokens: usage.output_tokens || 0 },
         response: { content: textContent, thinking: null, finish_reason: jsonResponse.status || "unknown" },
         status: "success"
@@ -290,7 +313,6 @@ export async function handleForcedSSEToJson({ providerResponse, sourceFormat, ta
 
   // Standard Chat Completions SSE path
   try {
-    const sseText = await providerResponse.text();
     const parsed = parseSSEToOpenAIResponse(sseText, model);
     if (!parsed) return createErrorResult(HTTP_STATUS.BAD_GATEWAY, "Invalid SSE response for non-streaming request");
     if (parsed.error) {
@@ -303,14 +325,14 @@ export async function handleForcedSSEToJson({ providerResponse, sourceFormat, ta
     if (onRequestSuccess) await onRequestSuccess();
 
     const usage = parsed.usage || {};
+    const latency = resolveLatency({ requestStartTime, ttft: measuredTtft, now });
     appendLog({ tokens: usage, status: "200 OK" });
     saveUsageStats({ provider, model, tokens: usage, connectionId, apiKey, endpoint: clientRawRequest?.endpoint, silent: true });
-    if (log?.line) log.line(reqTag, "📊", formatDoneLine({ usage, latency: { total: Date.now() - requestStartTime } }));
+    if (log?.line) log.line(reqTag, "📊", formatDoneLine({ usage, latency }));
 
-    const totalLatency = Date.now() - requestStartTime;
     saveRequestDetail(buildRequestDetail({
       ...ctx,
-      latency: { ttft: totalLatency, total: totalLatency },
+      latency,
       tokens: usage,
       response: {
         content: parsed.choices?.[0]?.message?.content || null,
