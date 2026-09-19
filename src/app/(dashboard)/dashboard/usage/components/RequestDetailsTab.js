@@ -86,10 +86,6 @@ function getCachedTokens(tokens) {
   return tokens?.cached_tokens || tokens?.cache_read_input_tokens || 0;
 }
 
-function getCacheCreationTokens(tokens) {
-  return tokens?.cache_creation_input_tokens || 0;
-}
-
 function getInputTokens(tokens) {
   const prompt = tokens?.prompt_tokens || tokens?.input_tokens || 0;
   // Canonical storage keeps prompt cache-inclusive. Legacy Claude rows may have
@@ -97,6 +93,41 @@ function getInputTokens(tokens) {
   // rows don't under-report input.
   const cache = getCachedTokens(tokens);
   return prompt < cache ? cache : prompt;
+}
+
+/** Speed above this is not physically plausible for an LLM; treat as bad timing. */
+const MAX_PLAUSIBLE_TPS = 1000;
+
+/**
+ * Generation speed in output tokens/second.
+ * Measured over the generation window only (total − ttft): including TTFT would
+ * fold queueing/latency into the rate and understate a fast model behind a slow
+ * first token. Returns null when the row has no usable timing or no output, so
+ * callers can render a dash instead of a misleading "0".
+ */
+function getTokensPerSecond(tokens, latency) {
+  const output = tokens?.completion_tokens || tokens?.output_tokens || 0;
+  const total = latency?.total || 0;
+  const ttft = latency?.ttft || 0;
+  const generationMs = total - ttft;
+
+  // Guard against non-positive windows (missing/equal timings) and zero output.
+  if (output <= 0 || generationMs <= 0) return null;
+
+  const value = output / (generationMs / 1000);
+
+  // A near-zero generation window (e.g. total − ttft ≈ 4ms) yields absurd rates.
+  // That is a bad timing record, not a real measurement — show a dash, not "20000".
+  if (value > MAX_PLAUSIBLE_TPS) return null;
+
+  return value;
+}
+
+/** Format a tokens/s value for display, or "—" when it cannot be computed. */
+function formatTokensPerSecond(value) {
+  if (value == null || !Number.isFinite(value)) return "—";
+  // Sub-10 rates keep a decimal so slow models don't all collapse to the same integer.
+  return `${value >= 10 ? Math.round(value) : value.toFixed(1)} tok/s`;
 }
 
 export default function RequestDetailsTab() {
@@ -257,16 +288,16 @@ export default function RequestDetailsTab() {
                 <th className="text-left p-4 text-sm font-semibold text-text-main">Provider</th>
                 <th className="text-right p-4 text-sm font-semibold text-text-main">Input Tokens</th>
                 <th className="text-right p-4 text-sm font-semibold text-text-main">Cached</th>
-                <th className="text-right p-4 text-sm font-semibold text-text-main">Cache Creation</th>
                 <th className="text-right p-4 text-sm font-semibold text-text-main">Output Tokens</th>
                 <th className="text-left p-4 text-sm font-semibold text-text-main">Latency</th>
+                <th className="text-right p-4 text-sm font-semibold text-text-main">Speed</th>
                 <th className="text-center p-4 text-sm font-semibold text-text-main">Action</th>
               </tr>
             </thead>
             <tbody>
               {loading ? (
                 <tr>
-                  <td colSpan="7" className="p-8 text-center text-text-muted">
+                  <td colSpan="9" className="p-8 text-center text-text-muted">
                     <div className="flex items-center justify-center gap-2">
                       <span className="material-symbols-outlined animate-spin text-[20px]">progress_activity</span>
                       Loading...
@@ -275,7 +306,7 @@ export default function RequestDetailsTab() {
                 </tr>
               ) : details.length === 0 ? (
                 <tr>
-                  <td colSpan="7" className="p-8 text-center text-text-muted">
+                  <td colSpan="9" className="p-8 text-center text-text-muted">
                     No request details found
                   </td>
                 </tr>
@@ -303,9 +334,6 @@ export default function RequestDetailsTab() {
                       {getCachedTokens(detail.tokens) > 0 ? getCachedTokens(detail.tokens).toLocaleString() : "—"}
                     </td>
                     <td className="p-4 text-sm text-text-main text-right font-mono">
-                      {getCacheCreationTokens(detail.tokens) > 0 ? getCacheCreationTokens(detail.tokens).toLocaleString() : "—"}
-                    </td>
-                    <td className="p-4 text-sm text-text-main text-right font-mono">
                       {detail.tokens?.completion_tokens?.toLocaleString() || 0}
                     </td>
                     <td className="p-4 text-sm text-text-muted">
@@ -313,6 +341,9 @@ export default function RequestDetailsTab() {
                         <div>TTFT: <span className="font-mono">{detail.latency?.ttft || 0}ms</span></div>
                         <div>Total: <span className="font-mono">{detail.latency?.total || 0}ms</span></div>
                       </div>
+                    </td>
+                    <td className="p-4 text-sm text-text-main text-right font-mono whitespace-nowrap">
+                      {formatTokensPerSecond(getTokensPerSecond(detail.tokens, detail.latency))}
                     </td>
                     <td className="p-4 text-center">
                       <Button
@@ -397,18 +428,16 @@ export default function RequestDetailsTab() {
                   </span>
                 </div>
               )}
-              {getCacheCreationTokens(selectedDetail.tokens) > 0 && (
-                <div>
-                  <span className="text-text-muted">Cache Creation:</span>{" "}
-                  <span className="text-text-main font-mono">
-                    {getCacheCreationTokens(selectedDetail.tokens).toLocaleString()}
-                  </span>
-                </div>
-              )}
               <div>
                 <span className="text-text-muted">Output Tokens:</span>{" "}
                 <span className="text-text-main font-mono">
                   {selectedDetail.tokens?.completion_tokens?.toLocaleString() || 0}
+                </span>
+              </div>
+              <div>
+                <span className="text-text-muted">Speed:</span>{" "}
+                <span className="text-text-main font-mono">
+                  {formatTokensPerSecond(getTokensPerSecond(selectedDetail.tokens, selectedDetail.latency))}
                 </span>
               </div>
             </div>

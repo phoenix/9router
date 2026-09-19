@@ -1096,6 +1096,8 @@
   "Special reasoning/thinking tokens (fallback to output rate)": "特殊推理/思考 Token（回退至输出费率）",
   "Speech To Text": "语音转文本",
   "Speech-to-Text": "语音转文本",
+  "Speed": "速度",
+  "Speed:": "速度：",
   "Standard prompt tokens": "标准提示 Token",
   "Start DNS": "启动 DNS",
   "Start Date": "开始日期",
