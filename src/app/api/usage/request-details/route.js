@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getRequestDetails } from "@/lib/usageDb";
+import { redactDetails } from "@/lib/security/redactPayload.js";
 
 /**
  * GET /api/usage/request-details
@@ -48,20 +49,13 @@ export async function GET(request) {
     
     const result = await getRequestDetails(filter);
 
-    // Redact conversation payloads: the stored details include full request
-    // bodies (user prompts, tool calls) and provider responses. Returning them
-    // wholesale lets any dashboard-authenticated user (or, if requireLogin is
-    // disabled, anyone) read every user's conversation history. Keep the
-    // metadata (model, tokens, latency, status) but drop message content.
-    const redactedDetails = (result.details || []).map((d) => {
-      const redacted = { ...d };
-      for (const key of ["request", "providerRequest", "providerResponse", "response"]) {
-        if (redacted[key] !== undefined) {
-          redacted[key] = { redacted: true };
-        }
-      }
-      return redacted;
-    });
+    // Redact credentials from conversation payloads before returning them: the
+    // stored details include full request bodies (user prompts, tool calls) and
+    // provider responses, which can embed upstream tokens or keys. Blanking the
+    // payloads wholesale would hide every conversation from the dashboard, so
+    // redactPayload keeps the structure (prompts, completions, error messages)
+    // and masks only credential-bearing fields.
+    const redactedDetails = redactDetails(result.details);
 
     return NextResponse.json({ ...result, details: redactedDetails });
   } catch (error) {
