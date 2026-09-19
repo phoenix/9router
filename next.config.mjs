@@ -25,8 +25,34 @@ const nextConfig = {
     root: tracingRoot
   },
   outputFileTracingRoot: tracingRoot,
+  // Only the traced server runtime belongs in standalone. Without these exclusions the
+  // tracer walks the whole repo and drags source trees, tests, docs and images into the
+  // artifact (~10 MB in .next/standalone, multiplied again in the CLI bundle).
+  // `open-sse` is deliberately NOT excluded: it is real runtime code imported from src/sse.
   outputFileTracingExcludes: {
-    "*": ["./gitbook/**/*"]
+    "*": [
+      "./gitbook/**/*",
+      "./tests/**/*",
+      "./images/**/*",
+      "./docs/**/*",
+      "./skills/**/*",
+      "./scripts/**/*",
+      "./cli/**/*",
+      "./scratch/**/*",
+      "./**/*.md",
+      "./.env*",
+      // Build outputs must never be traced. .next-cli-build lives inside the tracing root, so
+      // a previous CLI build's standalone tree would otherwise be copied into the next one,
+      // nesting a copy of the bundle inside itself.
+      "./.next-cli-build/**/*",
+      // Packed release tarballs. `npm pack --pack-destination ..` drops 9router-<version>.tgz
+      // into the tracing root, and Turbopack's dynamic-filesystem scanning picks it up: it
+      // appears in ~145 route traces and gets copied into standalone (16.5 MB), then into
+      // cli/app, then into the NEXT tarball — a self-nesting loop that doubles the artifact.
+      // Excluding it here is the durable fix; the packager also guards against it.
+      "./*.tgz",
+      "./*.tar.gz",
+    ]
   },
   images: {
     unoptimized: true
