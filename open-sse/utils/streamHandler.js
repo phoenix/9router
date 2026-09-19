@@ -99,10 +99,11 @@ export function createStreamController({ onDisconnect, onError, log, provider, m
  * @param {function} [onAbortTerminal] - Receives a human-readable abort
  * message and returns terminal SSE bytes to emit downstream.
  */
-export function createDisconnectAwareStream(transformStream, streamController, onAbortTerminal = null) {
+export function createDisconnectAwareStream(transformStream, streamController, onAbortTerminal = null, onFinalize = null) {
   const reader = transformStream.readable.getReader();
   const writer = transformStream.writable.getWriter();
   let terminalEmitted = false;
+  let finalized = false;
 
   // Emit a synthesized terminal payload (e.g. Responses response.failed + [DONE]) once
   const emitTerminal = (controller) => {
@@ -114,11 +115,32 @@ export function createDisconnectAwareStream(transformStream, streamController, o
     } catch { /* best-effort terminal */ }
   };
 
+  // The transform stream's flush() is what normally finalizes usage and overwrites
+  // the "[Streaming in progress...]" placeholder row (stream.js finalizeStream() ->
+  // onStreamComplete -> saveRequestDetail). flush() does NOT run when a piped
+  // stream is cancelled, so a client hang-up used to skip it and leave a permanent
+  // success/zero-token row. stream.js exposes finalize() for exactly this teardown
+  // case; it is idempotent, so calling it after a normal flush() is a no-op.
+  // Errors are swallowed: this runs during teardown and must never throw.
+  const finalizeTransform = () => {
+    if (finalized) return;
+    finalized = true;
+    try { onFinalize?.(transformStream); } catch { /* teardown must not throw */ }
+  };
+
+  /** Close the downstream controller once, ignoring "already closed" races. */
+  const safeClose = (controller) => {
+    try { controller.close(); } catch { /* already closed or cancelled */ }
+  };
+
   return new ReadableStream({
     async pull(controller) {
       if (!streamController.isConnected()) {
+        // Client is gone: still finalize so usage/placeholder get written, but
+        // discard the bytes — nobody is reading them.
+        finalizeTransform();
         emitTerminal(controller);
-        controller.close();
+        safeClose(controller);
         return;
       }
 
@@ -170,8 +192,10 @@ export function createDisconnectAwareStream(transformStream, streamController, o
 
     cancel(reason) {
       streamController.handleDisconnect(reason || "cancelled");
-      reader.cancel();
-      writer.abort();
+      // Finalize the transform (usage + request-details row) instead of leaving the
+      // placeholder behind, then release the handles. See finalizeTransform above.
+      finalizeTransform();
+      writer.abort().catch(() => {});
     }
   });
 }
@@ -254,7 +278,11 @@ export function pipeWithDisconnect(providerResponse, transformStream, streamCont
   return createDisconnectAwareStream(
     { readable: transformedBody, writable: { getWriter: () => ({ abort: () => Promise.resolve() }) } },
     wrappedController,
-    onAbortTerminal ? () => onAbortTerminal(abortMessage) : null
+    onAbortTerminal ? () => onAbortTerminal(abortMessage) : null,
+    // flush() never runs on a cancelled pipe, so the transform's own finalizer must
+    // be invoked on teardown or the request-details row keeps its placeholder.
+    // Note: the hook is called with the transform stream itself, not the wrapper above.
+    () => transformStream.finalize?.()
   );
 }
 

@@ -106,7 +106,7 @@ export function createSSEStream(options = {}) {
     }
   };
 
-  return new TransformStream({
+  const stream = new TransformStream({
     transform(chunk, controller) {
       if (!ttftAt) ttftAt = Date.now();
       const text = decoder.decode(chunk, { stream: true });
@@ -486,6 +486,15 @@ export function createSSEStream(options = {}) {
       }
     }
   });
+
+  // Cancelling a piped stream never runs flush() (verified against the WHATWG
+  // reference implementation), so a client that hangs up mid-stream would skip
+  // finalizeStream() entirely — leaving the request-details row on its
+  // "[Streaming in progress...]" placeholder with zero tokens, and never
+  // persisting usage. streamHandler calls this during teardown. finalizeStream()
+  // is idempotent, so the normal flush() path is unaffected.
+  stream.finalize = finalizeStream;
+  return stream;
 }
 
 export function createSSETransformStreamWithLogger(targetFormat, sourceFormat, provider = null, reqLogger = null, toolNameMap = null, model = null, connectionId = null, body = null, onStreamComplete = null, apiKey = null, customToolNames = null, credentials = null) {
