@@ -15,6 +15,17 @@ const USE_NAPI_BUILD = NODE_MAJOR >= 22;
 const BETTER_SQLITE3_VERSION = USE_NAPI_BUILD ? "13.0.3" : "12.6.2";
 const SQL_JS_VERSION = "1.14.1";
 
+// Resolve the 9router data directory.
+//
+// This MUST be computed HERE, in the launcher, rather than inside the Next
+// server bundle: Turbopack treats `process.platform` as a build-time constant
+// and eliminates branches that don't match the BUILD machine, so the server's
+// own copy of this logic (src/lib/dataDir.js) ships Windows-only paths when the
+// tarball is built on Windows. Running on Linux then resolves the data dir to
+// ~/AppData/Roaming/9router instead of ~/.9router, and an existing install
+// silently opens a brand-new empty database. The launcher runs under real Node,
+// so process.platform here is the genuine runtime platform; cli.js passes the
+// result to the server as DATA_DIR, which src/lib/dataDir.js honours first.
 function getDataDir() {
   if (process.env.DATA_DIR) return process.env.DATA_DIR;
   return process.platform === "win32"
@@ -173,6 +184,7 @@ function buildEnvWithRuntime(baseEnv = process.env) {
 module.exports = {
   ensureSqliteRuntime,
   buildEnvWithRuntime,
+  getDataDir,
   getRuntimeDir,
   getRuntimeNodeModules,
   runNpmInstall,

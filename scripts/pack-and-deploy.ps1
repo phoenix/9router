@@ -121,6 +121,7 @@ function Install-Locally {
   pnpm add -g $tarPath
   if ($LASTEXITCODE -ne 0) { Fail "local global install failed" }
   Ok "installed globally — verify with: 9router --version"
+  Write-Host "  [!!] a running instance is NOT restarted by this; restart it to pick up the new version" -ForegroundColor Yellow
 }
 
 function Deploy-Server([string]$target) {
@@ -130,13 +131,36 @@ function Deploy-Server([string]$target) {
   scp $tarPath "${target}:/tmp/$tarName"
   if ($LASTEXITCODE -ne 0) { Fail "scp upload failed" }
   Info "installing on server (pnpm remove old + add new, absolute path)..."
-  ssh $target "pnpm remove -g 9router 2>/dev/null; pnpm add -g /tmp/$tarName && 9router --version"
+  # NOTE: no `9router --version` at the end here. A non-interactive ssh shell does
+  # not source ~/.bashrc, so the `9router` shell function (which injects the
+  # NODE_OPTIONS probe patch) never loads. The bare pnpm shim would then run
+  # WITHOUT the patch and hang on its 1.1.1.1 connectivity probe — wedging the
+  # whole session. Version is verified separately below, with the patch applied.
+  ssh $target "pnpm remove -g 9router 2>/dev/null; pnpm add -g /tmp/$tarName"
   if ($LASTEXITCODE -ne 0) { Fail "server install failed" }
-  Ok "server install verified"
+  Ok "server install completed"
+
+  # Verify the GLOBAL install specifically (absolute path), with the probe patch
+  # injected the same way the ~/.bashrc function does, under a hard timeout so a
+  # hanging probe can never wedge this script.
+  Info "verifying global install (patch-injected, 25s timeout)..."
+  $verify = 'timeout 25 env FETCH_CONNECT_TIMEOUT_MS=15000 NODE_OPTIONS="--require $HOME/.9router/patch-probe.js" /opt/pnpm/bin/9router --version --skip-update 2>&1 | tail -1'
+  $remoteVer = ssh $target $verify
+  if ($LASTEXITCODE -ne 0) {
+    Write-Host "  [!!] version check failed or timed out — install itself succeeded; verify manually" -ForegroundColor Yellow
+  } else {
+    Ok "server reports version: $remoteVer"
+  }
+
   $targetFile = Join-Path $env:USERPROFILE ".9router\deploy-target.txt"
   New-Item -ItemType Directory -Force -Path (Split-Path $targetFile) | Out-Null
   Set-Content -Path $targetFile -Value $target
   Write-Host "  remembered server in $targetFile (outside the repo) — next time just press 3"
+  Write-Host "  [!!] the running server was NOT restarted — install alone does not apply the" -ForegroundColor Yellow
+  Write-Host "       new version. On the server, in a LOGIN shell (needs the probe patch):" -ForegroundColor Yellow
+  Write-Host "         pkill -f '9router/cli.js'; sleep 3" -ForegroundColor Gray
+  Write-Host "         cd ~ && nohup 9router --tray --skip-update -p 20128 > ~/.9router/logs/9router-`$(date +%Y%m%d).log 2>&1 & disown" -ForegroundColor Gray
+  Write-Host "         N=`$(pgrep -f next-server | head -1); ls -l /proc/`$N/fd | grep sqlite   # must show ~/.9router" -ForegroundColor Gray
 }
 
 if ($InstallLocally -or $Server) {

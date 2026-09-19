@@ -63,7 +63,7 @@ function createSpinner(text) {
 }
 
 const pkg = require("./package.json");
-const { ensureSqliteRuntime, buildEnvWithRuntime } = require("./hooks/sqliteRuntime");
+const { ensureSqliteRuntime, buildEnvWithRuntime, getDataDir } = require("./hooks/sqliteRuntime");
 const { ensureTrayRuntime } = require("./hooks/trayRuntime");
 const args = process.argv.slice(2);
 
@@ -620,7 +620,14 @@ function startServer(updatePromise) {
       env: {
         ...buildEnvWithRuntime(process.env),
         PORT: port.toString(),
-        HOSTNAME: host
+        HOSTNAME: host,
+        // Pin the data dir from the launcher, where process.platform is the
+        // real runtime platform. The server bundle's own platform check is
+        // eliminated at build time (Turbopack folds it to the BUILD machine),
+        // which made a Windows-built tarball look for ~/AppData/Roaming/9router
+        // on Linux and silently open an empty database. DATA_DIR wins over any
+        // platform logic in src/lib/dataDir.js.
+        DATA_DIR: process.env.DATA_DIR || getDataDir()
       }
     });
     if (!showLog && child.stderr) {
@@ -789,7 +796,10 @@ function startServer(updatePromise) {
             detached: true,
             stdio: "ignore",
             windowsHide: true,
-            env: { ...process.env }
+            // Carry the resolved data dir across the re-exec so the background
+            // instance cannot fall back to the bundle's build-time platform
+            // branch (see spawnServer).
+            env: { ...process.env, DATA_DIR: process.env.DATA_DIR || getDataDir() }
           });
           bgProcess.unref();
 
