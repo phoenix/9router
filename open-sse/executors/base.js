@@ -6,6 +6,45 @@ import { ANTHROPIC_API_VERSION, OPENAI_COMPAT_BASE, ANTHROPIC_COMPAT_BASE } from
 import { resolveOpenAICompatibleApiType } from "../services/provider.js";
 
 /**
+ * Ask the upstream to include a usage object in streaming responses.
+ *
+ * Streaming upstreams only report usage when requested (OpenAI's
+ * `stream_options: {include_usage: true}`); the final chunk is otherwise a bare
+ * `[DONE]` and token accounting silently records zero for the whole response.
+ *
+ * Applied only to OpenAI-shaped streaming bodies: `stream_options` is an
+ * OpenAI-protocol field, so injecting it into a Claude/Gemini-shaped body would
+ * be rejected by strict upstreams. Providers whose executor deletes or rewrites
+ * `stream_options` keep their own behaviour — transformRequest has already run,
+ * so this only adds the field where the body is still OpenAI-shaped.
+ *
+ * @param {object} body - the post-transform request body
+ * @param {boolean} stream - whether this request goes upstream as a stream
+ * @returns {object} the body, with stream_options.include_usage when applicable
+ */
+function withStreamUsage(body, stream) {
+  if (stream !== true) return body;
+  if (!body || typeof body !== "object") return body;
+  // OpenAI-shaped streaming bodies are identified by `messages`; Claude bodies
+  // use `messages` too but live under a different endpoint/format, so also
+  // require that no Claude-specific marker is present.
+  if (!Array.isArray(body.messages)) return body;
+  if (body.system !== undefined || body.anthropic_version !== undefined) return body;
+  if (body.stream !== true) return body;
+
+  const existing = body.stream_options;
+  if (existing && typeof existing === "object" && existing.include_usage === true) return body;
+
+  return {
+    ...body,
+    stream_options: {
+      ...(existing && typeof existing === "object" ? existing : {}),
+      include_usage: true,
+    },
+  };
+}
+
+/**
  * BaseExecutor - Base class for provider executors
  */
 export class BaseExecutor {
@@ -127,7 +166,13 @@ export class BaseExecutor {
     for (let urlIndex = 0; urlIndex < fallbackCount; urlIndex++) {
       const url = this.buildUrl(model, stream, urlIndex, credentials);
       const transformedBody = this.transformRequest(model, body, stream, credentials);
-      const headers = this.buildHeaders(credentials, stream, url, model, transformedBody);
+      // Ask the upstream to report usage on streaming requests. Without this the
+      // final chunk is a bare [DONE] and token accounting silently records zero
+      // for every streamed response. Applied after transformRequest so it is the
+      // last word (executors that rebuild the body, e.g. codex, may have already
+      // replaced it), and only when the request really goes upstream as a stream.
+      const finalBody = withStreamUsage(transformedBody, stream);
+      const headers = this.buildHeaders(credentials, stream, url, model, finalBody);
 
       if (!retryAttemptsByUrl[urlIndex]) retryAttemptsByUrl[urlIndex] = 0;
 
@@ -138,7 +183,7 @@ export class BaseExecutor {
       const mergedSignal = signal ? AbortSignal.any([signal, connectCtrl.signal]) : connectCtrl.signal;
 
       try {
-        const bodyStr = JSON.stringify(transformedBody);
+        const bodyStr = JSON.stringify(finalBody);
         const fetchT0 = Date.now();
         dbg("FETCH", `${this.provider.toUpperCase()} → ${url} | body=${bodyStr.length}B | connectTimeout=${timeoutMs}ms`);
         const response = await proxyAwareFetch(url, {

@@ -16,6 +16,7 @@ import { getExecutor } from "../executors/index.js";
 import { supportsGrokCliReasoningEffort } from "../config/grokCli.js";
 import { buildRequestDetail, extractRequestConfig } from "./chatCore/requestDetail.js";
 import { handleForcedSSEToJson } from "./chatCore/sseToJsonHandler.js";
+import { shouldStreamJsonObjectRequest, applyStreamingForJsonObject } from "../config/jsonObjectStreaming.js";
 import { handleNonStreamingResponse } from "./chatCore/nonStreamingHandler.js";
 import { handleStreamingResponse, buildOnStreamComplete } from "./chatCore/streamingHandler.js";
 import { detectClientTool, isNativePassthrough } from "../utils/clientDetector.js";
@@ -139,6 +140,30 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   const clientPrefersSSE = acceptHeader.includes("text/event-stream");
   if (clientPrefersJson && !clientPrefersSSE && body.stream !== true && !providerRequiresStreaming) {
     stream = false;
+  }
+
+  // Promote a non-streaming `response_format: json_object` request to a streaming
+  // upstream call. Such a request must return one complete JSON document, so the
+  // client sent stream:false; upstream then generates the WHOLE answer before
+  // sending headers, which makes our header timer measure prefill + generation
+  // (90-180s on slow free-tier models) and kills healthy requests. Streaming
+  // upstream decouples the two, and handleForcedSSEToJson re-assembles the SSE
+  // into the single JSON document the client asked for, so its contract holds.
+  // See config/jsonObjectStreaming.js for the verified scope.
+  const jsonObjectStreaming = shouldStreamJsonObjectRequest({
+    body,
+    stream,
+    provider,
+    isImageGenModel,
+  });
+  if (jsonObjectStreaming) {
+    // The body itself must carry stream:true: DefaultExecutor.transformRequest
+    // never touches body.stream, so flipping only the local `stream` variable
+    // would leave the upstream returning a non-stream body that we would then
+    // parse as SSE.
+    body = applyStreamingForJsonObject(body);
+    stream = true;
+    log?.debug?.("FORMAT", `json_object non-streaming request -> streaming upstream (provider=${provider})`);
   }
 
   const reqLogger = await createRequestLogger(sourceFormat, targetFormat, model);
@@ -478,8 +503,12 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   const appendLog = (extra) => appendRequestLog({ model, provider, connectionId, ...extra }).catch(() => { });
   const trackDone = () => trackPendingRequest(model, provider, connectionId, false);
 
-  // Provider forced streaming but client wants JSON
-  if (!clientRequestedStreaming && providerRequiresStreaming) {
+  // Upstream is streaming, but the client asked for a single JSON body:
+  //   - provider forced streaming (codex, openbuddy, ...), or
+  //   - we promoted a json_object request to streaming upstream above.
+  // Either way the SSE must be re-assembled into one JSON document before it
+  // reaches the client, which never asked for (and cannot parse) SSE.
+  if (!clientRequestedStreaming && (providerRequiresStreaming || jsonObjectStreaming)) {
     const result = await handleForcedSSEToJson({ ...sharedCtx, providerResponse, sourceFormat, targetFormat: providerResponseFormat, customToolNames, trackDone, appendLog });
     if (result) { streamController.handleComplete(); return result; }
   }
