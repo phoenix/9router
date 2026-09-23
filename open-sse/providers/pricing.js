@@ -129,6 +129,28 @@ export const MODEL_PRICING = {
   "minimax-m2.1":                 { input: 0.50,  output: 2.00,  cached: 0.25,  reasoning: 3.00,   cache_creation: 0.50  },
   "minimax-m2.5":                 { input: 0.60,  output: 2.40,  cached: 0.30,  reasoning: 3.60,   cache_creation: 0.60  },
 
+  // === Xiaomi MiMo ===
+  // Official Xiaomi platform pricing (models.dev/xiaomi), $/1M tokens.
+  // Free channels (-free suffix) resolve to these via the strip-free rule.
+  "mimo-v2.5":                   { input: 0.14,  output: 0.28,  cached: 0.0028, reasoning: 0.28,  cache_creation: 0.14  },
+  "mimo-v2.5-pro":               { input: 0.435, output: 0.87,  cached: 0.0036, reasoning: 0.87,  cache_creation: 0.435 },
+  "mimo-v2.5-pro-ultraspeed":    { input: 1.305, output: 2.61,  cached: 0.0108, reasoning: 2.61,  cache_creation: 1.305 },
+  "mimo-v2.6-flash":             { input: 0.14,  output: 0.28,  cached: 0.0028, reasoning: 0.28,  cache_creation: 0.14  },
+  "mimo-v2.6-pro":               { input: 0.435, output: 0.87,  cached: 0.0036, reasoning: 0.87,  cache_creation: 0.435 },
+  "mimo-v2.6-pro-ultraspeed":    { input: 4.35,  output: 8.7,   cached: 0.036,  reasoning: 8.7,   cache_creation: 4.35  },
+  "mimo-v2-flash":               { input: 0.14,  output: 0.28,  cached: 0.0028, reasoning: 0.28,  cache_creation: 0.14  },
+  "mimo-v2-pro":                 { input: 0.435, output: 0.87,  cached: 0.0036, reasoning: 0.87,  cache_creation: 0.435 },
+  "mimo-v2-omni":                { input: 0.14,  output: 0.28,  cached: 0.0028, reasoning: 0.28,  cache_creation: 0.14  },
+
+  // === Meta Muse Spark ===
+  "muse-spark-1.2":              { input: 0.1,   output: 0.2,   cached: 0.002,  reasoning: 0.2,   cache_creation: 0.1   },
+  "muse-spark-1.3":              { input: 0.1,   output: 0.2,   cached: 0.002,  reasoning: 0.2,   cache_creation: 0.1   },
+
+  // === NVIDIA Nemotron ===
+  "nemotron-3-ultra-550b-a55b":  { input: 0.5,   output: 2.5,   cached: 0.25,   reasoning: 2.5,   cache_creation: 0.5   },
+  "nemotron-3-ultra":            { input: 0.5,   output: 2.5,   cached: 0.25,   reasoning: 2.5,   cache_creation: 0.5   },
+  "nemotron-3.5-lightning":      { input: 0.2,   output: 0.8,   cached: 0.1,    reasoning: 0.8,   cache_creation: 0.2   },
+
   // === Grok ===
   "grok-code-fast-1":             { input: 0.50,  output: 2.00,  cached: 0.25,  reasoning: 3.00,   cache_creation: 0.50  },
 
@@ -275,8 +297,14 @@ export const PROVIDER_PRICING = {
  * Pattern-based pricing fallback — matched when no exact model entry found.
  * Patterns use simple glob: "*" matches any substring.
  * First match wins — order matters.
+ *
+ * The leading entry marked stripFree is NOT a glob rule — it documents the
+ * free-variant → paid-base mapping getPricingForModel applies after a direct
+ * miss (suffix "-free"/"-contributor-free" is stripped and the chain re-runs).
  */
 export const PATTERN_PRICING = [
+  // --- Free-tier variants map to their paid base model's pricing ---
+  { pattern: "*-free", stripFree: true, pricing: null },
   // --- Codex variants ---
   { pattern: "*-codex-xhigh",   pricing: { input: 10.00, output: 40.00, cached: 5.00,  reasoning: 60.00,  cache_creation: 10.00 } },
   { pattern: "*-codex-high",    pricing: { input: 8.00,  output: 32.00, cached: 4.00,  reasoning: 48.00,  cache_creation: 8.00  } },
@@ -366,11 +394,35 @@ export function matchPattern(pattern, model) {
  *   2. MODEL_PRICING[model]
  *   3. PATTERN_PRICING (glob match)
  *
+ * Free-variant mapping: if nothing matched and the model carries a free-tier
+ * suffix ("-free", "-contributor-free"), strip it and re-resolve against the
+ * paid base model (e.g. "mimo-v2.5-free" → "mimo-v2.5"). Estimated cost for a
+ * free channel should reflect what the same tokens would cost at list price —
+ * a free variant whose base has no published price (mystery preview models)
+ * still resolves to null and stays cost 0.
+ *
  * @param {string} provider
  * @param {string} model
  * @returns {object|null}
  */
 export function getPricingForModel(provider, model) {
+  const direct = resolveDirect(provider, model);
+  if (direct) return direct;
+
+  // Free-variant → paid-base mapping (see docblock).
+  if (model && FREE_SUFFIX_RE.test(model)) {
+    const baseModel = model.replace(FREE_SUFFIX_RE, "");
+    if (baseModel && baseModel !== model) {
+      return resolveDirect(provider, baseModel);
+    }
+  }
+
+  return null;
+}
+
+const FREE_SUFFIX_RE = /(?:-contributor)?-free$/;
+
+function resolveDirect(provider, model) {
   if (!model) return null;
 
   // 1. Provider-specific override
@@ -383,8 +435,9 @@ export function getPricingForModel(provider, model) {
   if (MODEL_PRICING[baseModel]) return MODEL_PRICING[baseModel];
   if (MODEL_PRICING[model]) return MODEL_PRICING[model];
 
-  // 3. Pattern match
-  for (const { pattern, pricing } of PATTERN_PRICING) {
+  // 3. Pattern match (stripFree sentinel is documentation-only, not a glob rule)
+  for (const { pattern, pricing, stripFree } of PATTERN_PRICING) {
+    if (stripFree) continue;
     if (matchPattern(pattern, baseModel) || matchPattern(pattern, model)) {
       return pricing;
     }

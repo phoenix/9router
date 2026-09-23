@@ -4,6 +4,7 @@
 - **Xiaomi MiMo**: server-assisted desktop login for headless/Docker deployments, five account clusters (cn/sgp/ams/ru/in), and v2.6 pro/flash/pro-ultraspeed models with dual-route (account service vs. cloud API)
 - **Claude**: add Claude Opus 5.5 support
 - **i18n**: translate React text rewrites via characterData mutation observer
+- **Pricing**: free-tier variants (`-free` suffix) now resolve to their paid base model's list price for estimated cost (e.g. `mimo-v2.5-free` → `mimo-v2.5` at $0.14/$0.28 per 1M); added Xiaomi MiMo v2.5/v2.6, Meta Muse Spark 1.2/1.3, and NVIDIA Nemotron 3 Ultra official pricing
 
 ## Fixes
 - **Proxy Pools**: keep request headers intact through Vercel/Cloudflare/Deno relays (spreading a `Headers` instance yielded `{}`, dropping auth and content-type)
