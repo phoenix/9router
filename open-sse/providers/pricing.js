@@ -150,6 +150,8 @@ export const MODEL_PRICING = {
   "nemotron-3-ultra-550b-a55b":  { input: 0.5,   output: 2.5,   cached: 0.25,   reasoning: 2.5,   cache_creation: 0.5   },
   "nemotron-3-ultra":            { input: 0.5,   output: 2.5,   cached: 0.25,   reasoning: 2.5,   cache_creation: 0.5   },
   "nemotron-3.5-lightning":      { input: 0.2,   output: 0.8,   cached: 0.1,    reasoning: 0.8,   cache_creation: 0.2   },
+  "nemotron-3-super-120b-a12b":  { input: 0.3,   output: 0.9,   cached: 0.1,    reasoning: 0.9,   cache_creation: 0.3   },
+  "nemotron-3-super":            { input: 0.3,   output: 0.9,   cached: 0.1,    reasoning: 0.9,   cache_creation: 0.3   },
 
   // === Grok ===
   "grok-code-fast-1":             { input: 0.50,  output: 2.00,  cached: 0.25,  reasoning: 3.00,   cache_creation: 0.50  },

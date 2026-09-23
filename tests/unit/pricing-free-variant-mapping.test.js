@@ -57,6 +57,18 @@ describe("free-variant pricing maps to its paid base model", () => {
       expect(MODEL_PRICING["nemotron-3-ultra-550b-a55b"].input).toBe(0.5);
       expect(MODEL_PRICING["nemotron-3-ultra-550b-a55b"].output).toBe(2.5);
     });
+
+    it("nemotron-3-super-120b-a12b has NVIDIA official pricing globally", () => {
+      expect(MODEL_PRICING["nemotron-3-super-120b-a12b"]).toBeDefined();
+      expect(MODEL_PRICING["nemotron-3-super-120b-a12b"].input).toBe(0.3);
+      expect(MODEL_PRICING["nemotron-3-super-120b-a12b"].output).toBe(0.9);
+    });
+
+    it("nemotron-3.5-lightning has NVIDIA official pricing", () => {
+      expect(MODEL_PRICING["nemotron-3.5-lightning"]).toBeDefined();
+      expect(MODEL_PRICING["nemotron-3.5-lightning"].input).toBe(0.2);
+      expect(MODEL_PRICING["nemotron-3.5-lightning"].output).toBe(0.8);
+    });
   });
 
   describe("getPricingForModel resolves free variants to base pricing", () => {
