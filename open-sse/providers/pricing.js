@@ -397,11 +397,13 @@ export function matchPattern(pattern, model) {
  *   3. PATTERN_PRICING (glob match)
  *
  * Free-variant mapping: if nothing matched and the model carries a free-tier
- * suffix ("-free", "-contributor-free"), strip it and re-resolve against the
- * paid base model (e.g. "mimo-v2.5-free" → "mimo-v2.5"). Estimated cost for a
- * free channel should reflect what the same tokens would cost at list price —
- * a free variant whose base has no published price (mystery preview models)
- * still resolves to null and stays cost 0.
+ * suffix — hyphen form ("-free", "-contributor-free") or OpenRouter's colon
+ * form (":free") — strip it and re-resolve against the paid base model
+ * (e.g. "mimo-v2.5-free" → "mimo-v2.5",
+ * "nvidia/nemotron-3-ultra-550b-a55b:free" → "nemotron-3-ultra-550b-a55b").
+ * Estimated cost for a free channel should reflect what the same tokens would
+ * cost at list price — a free variant whose base has no published price
+ * (mystery preview models) still resolves to null and stays cost 0.
  *
  * @param {string} provider
  * @param {string} model
@@ -422,7 +424,9 @@ export function getPricingForModel(provider, model) {
   return null;
 }
 
-const FREE_SUFFIX_RE = /(?:-contributor)?-free$/;
+// Free-tier suffix, hyphen form (opencode: "mimo-v2.5-free", "muse-spark-1.3-contributor-free")
+// AND colon form (openrouter: "nvidia/nemotron-3-ultra-550b-a55b:free").
+const FREE_SUFFIX_RE = /(?:-contributor)?-free$|:free$/;
 
 function resolveDirect(provider, model) {
   if (!model) return null;

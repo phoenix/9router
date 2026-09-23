@@ -81,6 +81,9 @@ describe("free-variant pricing maps to its paid base model", () => {
       ["opencode", "muse-spark-1.2-contributor-free", "muse-spark-1.2"],
       ["opencode", "muse-spark-1.3-contributor-free", "muse-spark-1.3"],
       ["opencode", "nemotron-3-ultra-free", "nemotron-3-ultra-550b-a55b"],
+      // OpenRouter colon form
+      ["openrouter", "nvidia/nemotron-3-ultra-550b-a55b:free", "nemotron-3-ultra-550b-a55b"],
+      ["openrouter", "nvidia/nemotron-3-super-120b-a12b:free", "nemotron-3-super-120b-a12b"],
     ];
 
     for (const [provider, freeModel, baseModel] of cases) {
@@ -106,6 +109,8 @@ describe("free-variant pricing maps to its paid base model", () => {
       expect(getPricingForModel("opencode", "x-preview-f-free")).toBeNull();
       expect(getPricingForModel("openrouter", "stealth/ox-alpha")).toBeNull();
       expect(getPricingForModel("openrouter", "openrouter/elephant-alpha")).toBeNull();
+      // Mystery model with colon free suffix — no priced base either.
+      expect(getPricingForModel("openrouter", "mystery/model:free")).toBeNull();
     });
   });
 
