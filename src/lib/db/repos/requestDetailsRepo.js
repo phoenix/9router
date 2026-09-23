@@ -186,6 +186,28 @@ export async function getRequestDetails(filter = {}) {
   );
   const details = rows.map((r) => parseJson(r.data, {}));
 
+  // Attach estimated cost per detail for the dashboard column. requestDetails
+  // rows don't store cost (usageHistory does), so compute it from the same
+  // pricing tables the usage pipeline uses. Fail-open: a pricing error must
+  // never break the details listing — rows just show no cost.
+  try {
+    const { getPricingForModel } = await import("@/lib/db/repos/pricingRepo.js");
+    const { calculateCostFromTokens } = await import("open-sse/providers/pricing.js");
+    const pricingCache = new Map();
+    for (const d of details) {
+      if (!d || !d.tokens) continue;
+      const cacheKey = `${d.provider}|${d.model}`;
+      let pricing = pricingCache.get(cacheKey);
+      if (pricing === undefined) {
+        pricing = await getPricingForModel(d.provider, d.model);
+        pricingCache.set(cacheKey, pricing);
+      }
+      d.cost = pricing ? calculateCostFromTokens(d.tokens, pricing) : 0;
+    }
+  } catch (e) {
+    console.error("[requestDetailsRepo] cost calc err:", e);
+  }
+
   return {
     details,
     pagination: { page, pageSize, totalItems, totalPages, hasNext: page < totalPages, hasPrev: page > 1 },

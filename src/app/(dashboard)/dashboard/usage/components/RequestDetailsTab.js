@@ -130,6 +130,16 @@ function formatTokensPerSecond(value) {
   return `${value >= 10 ? Math.round(value) : value.toFixed(1)} tok/s`;
 }
 
+/**
+ * Format a per-request estimated cost. Single requests are tiny fractions of a
+ * dollar — two decimals would collapse them all to "$0.00" — so keep up to 6
+ * significant decimals, trimming trailing zeros. Unpriced rows show "—".
+ */
+function formatEstCost(cost) {
+  if (cost == null || !Number.isFinite(cost) || cost === 0) return "—";
+  return `$${Number(cost.toFixed(6))}`;
+}
+
 export default function RequestDetailsTab() {
   const [details, setDetails] = useState([]);
   const [pagination, setPagination] = useState({
@@ -280,7 +290,7 @@ export default function RequestDetailsTab() {
 
       <Card padding="none">
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[880px]">
+          <table className="w-full min-w-[960px]">
             <thead>
               <tr className="border-b border-black/5 dark:border-white/5">
                 <th className="text-left p-4 text-sm font-semibold text-text-main">Timestamp</th>
@@ -291,13 +301,14 @@ export default function RequestDetailsTab() {
                 <th className="text-right p-4 text-sm font-semibold text-text-main">Output Tokens</th>
                 <th className="text-left p-4 text-sm font-semibold text-text-main">Latency</th>
                 <th className="text-right p-4 text-sm font-semibold text-text-main">Speed</th>
+                <th className="text-right p-4 text-sm font-semibold text-text-main">Est. Cost</th>
                 <th className="text-center p-4 text-sm font-semibold text-text-main">Action</th>
               </tr>
             </thead>
             <tbody>
               {loading ? (
                 <tr>
-                  <td colSpan="9" className="p-8 text-center text-text-muted">
+                  <td colSpan="10" className="p-8 text-center text-text-muted">
                     <div className="flex items-center justify-center gap-2">
                       <span className="material-symbols-outlined animate-spin text-[20px]">progress_activity</span>
                       Loading...
@@ -306,7 +317,7 @@ export default function RequestDetailsTab() {
                 </tr>
               ) : details.length === 0 ? (
                 <tr>
-                  <td colSpan="9" className="p-8 text-center text-text-muted">
+                  <td colSpan="10" className="p-8 text-center text-text-muted">
                     No request details found
                   </td>
                 </tr>
@@ -344,6 +355,9 @@ export default function RequestDetailsTab() {
                     </td>
                     <td className="p-4 text-sm text-text-main text-right font-mono whitespace-nowrap">
                       {formatTokensPerSecond(getTokensPerSecond(detail.tokens, detail.latency))}
+                    </td>
+                    <td className="p-4 text-sm text-text-main text-right font-mono whitespace-nowrap">
+                      {formatEstCost(detail.cost)}
                     </td>
                     <td className="p-4 text-center">
                       <Button
@@ -438,6 +452,12 @@ export default function RequestDetailsTab() {
                 <span className="text-text-muted">Speed:</span>{" "}
                 <span className="text-text-main font-mono">
                   {formatTokensPerSecond(getTokensPerSecond(selectedDetail.tokens, selectedDetail.latency))}
+                </span>
+              </div>
+              <div>
+                <span className="text-text-muted">Est. Cost:</span>{" "}
+                <span className="text-text-main font-mono">
+                  {formatEstCost(selectedDetail.cost)}
                 </span>
               </div>
             </div>
