@@ -1417,5 +1417,8 @@
   "Singapore": "新加坡",
   "Europe · Amsterdam": "欧洲 · 阿姆斯特丹",
   "Russia": "俄罗斯",
-  "India": "印度"
+  "India": "印度",
+  "Loading exchange rate": "正在加载汇率",
+  "Exchange rate unavailable": "汇率不可用",
+  "Using cached exchange rate (may be outdated)": "正在使用缓存汇率（可能已过期）"
 }

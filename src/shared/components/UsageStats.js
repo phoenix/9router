@@ -203,7 +203,12 @@ const PERIODS = [
   { value: "all", label: "All" },
 ];
 
-export default function UsageStats({ period: periodProp, setPeriod: setPeriodProp, hidePeriodSelector = false } = {}) {
+export default function UsageStats({
+  period: periodProp,
+  setPeriod: setPeriodProp,
+  hidePeriodSelector = false,
+  exchangeRate,
+} = {}) {
   const router = useRouter();
   const searchParams = useSearchParams();
 
@@ -468,7 +473,7 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
       )}
 
       {/* Overview cards */}
-      {loading ? spinner : <OverviewCards stats={stats} />}
+      {loading ? spinner : <OverviewCards stats={stats} exchangeRate={exchangeRate} />}
 
       {/* Provider topology + Recent Requests */}
       {loading ? spinner : (
@@ -484,7 +489,7 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
       )}
 
       {/* Token / Cost chart - sync period */}
-      {loading ? spinner : <UsageChart period={period} />}
+      {loading ? spinner : <UsageChart period={period} exchangeRate={exchangeRate} />}
 
       {/* Provider and model breakdown charts */}
       {!loading && (stats.byProvider || stats.byModel) && (
@@ -536,6 +541,7 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
             renderSummaryCells={activeTableConfig.renderSummaryCells}
             renderDetailCells={activeTableConfig.renderDetailCells}
             emptyMessage={activeTableConfig.emptyMessage}
+            exchangeRate={exchangeRate}
           />
         )}
       </div>

@@ -12,6 +12,7 @@ import {
   ResponsiveContainer,
 } from "recharts";
 import Card from "@/shared/components/Card";
+import { formatCnyCost } from "@/shared/utils/currency";
 
 const fmtTokens = (n) => {
   if (n >= 1000000) return `${(n / 1000000).toFixed(1)}M`;
@@ -19,8 +20,11 @@ const fmtTokens = (n) => {
   return String(n || 0);
 };
 
-const fmtCost = (n) => `$${(n || 0).toFixed(4)}`;
 const fmtRequests = (n) => String(n || 0);
+const CHART_COST_FORMAT = {
+  minimumFractionDigits: 0,
+  maximumFractionDigits: 4,
+};
 
 const VIEW_MODES = [
   { value: "tokens", label: "Tokens" },
@@ -31,10 +35,9 @@ const VIEW_MODES = [
 const VIEW_CONFIG = {
   tokens:   { dataKey: "tokens",   color: "#6366f1", gradId: "gradTokens",   formatter: fmtTokens,   label: "Tokens" },
   requests: { dataKey: "requests", color: "#14b8a6", gradId: "gradRequests", formatter: fmtRequests, label: "Requests" },
-  cost:     { dataKey: "cost",     color: "#f59e0b", gradId: "gradCost",     formatter: fmtCost,     label: "Cost" },
 };
 
-export default function UsageChart({ period = "7d" }) {
+export default function UsageChart({ period = "7d", exchangeRate }) {
   const [data, setData] = useState([]);
   const [loading, setLoading] = useState(true);
   const [viewMode, setViewMode] = useState("tokens");
@@ -58,8 +61,16 @@ export default function UsageChart({ period = "7d" }) {
     fetchData();
   }, [fetchData]);
 
-  const cfg = VIEW_CONFIG[viewMode];
+  const cfg = VIEW_CONFIG[viewMode] || {
+    dataKey: "cost",
+    color: "#f59e0b",
+    gradId: "gradCost",
+    label: "Cost",
+  };
   const hasData = data.some((d) => (d[cfg.dataKey] || 0) > 0);
+  const formatter = viewMode === "cost"
+    ? (value) => formatCnyCost(value, exchangeRate, CHART_COST_FORMAT)
+    : cfg.formatter;
 
   return (
     <Card className="flex min-w-0 flex-col gap-3 p-3 sm:p-4">
@@ -111,8 +122,8 @@ export default function UsageChart({ period = "7d" }) {
               tick={{ fontSize: 10, fill: "currentColor", fillOpacity: 0.5 }}
               tickLine={false}
               axisLine={false}
-              tickFormatter={cfg.formatter}
-              width={50}
+              tickFormatter={formatter}
+              width={64}
             />
             <Tooltip
               contentStyle={{
@@ -121,7 +132,7 @@ export default function UsageChart({ period = "7d" }) {
                 borderRadius: "8px",
                 fontSize: "12px",
               }}
-              formatter={(value) => [cfg.formatter(value), cfg.label]}
+              formatter={(value) => [formatter(value), cfg.label]}
             />
             <Area
               type="monotone"
@@ -141,4 +152,7 @@ export default function UsageChart({ period = "7d" }) {
 
 UsageChart.propTypes = {
   period: PropTypes.string,
+  exchangeRate: PropTypes.shape({
+    rate: PropTypes.number.isRequired,
+  }),
 };

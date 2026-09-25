@@ -1,10 +1,12 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import PropTypes from "prop-types";
 import Card from "@/shared/components/Card";
 import Button from "@/shared/components/Button";
 import Drawer from "@/shared/components/Drawer";
 import Pagination from "@/shared/components/Pagination";
+import { formatCnyCost } from "@/shared/utils/currency";
 import { cn } from "@/shared/utils/cn";
 import { AI_PROVIDERS, getProviderByAlias } from "@/shared/constants/providers";
 
@@ -131,16 +133,18 @@ function formatTokensPerSecond(value) {
 }
 
 /**
- * Format a per-request estimated cost. Single requests are tiny fractions of a
- * dollar — two decimals would collapse them all to "$0.00" — so keep up to 6
- * significant decimals, trimming trailing zeros. Unpriced rows show "—".
+ * Single requests are tiny fractions of the base cost, so keep up to six
+ * fractional digits and trim trailing zeros. Unpriced rows stay unavailable.
  */
-function formatEstCost(cost) {
+function formatEstCost(cost, exchangeRate) {
   if (cost == null || !Number.isFinite(cost) || cost === 0) return "—";
-  return `$${Number(cost.toFixed(6))}`;
+  return formatCnyCost(cost, exchangeRate, {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 6,
+  });
 }
 
-export default function RequestDetailsTab() {
+export default function RequestDetailsTab({ exchangeRate }) {
   const [details, setDetails] = useState([]);
   const [pagination, setPagination] = useState({
     page: 1,
@@ -357,7 +361,7 @@ export default function RequestDetailsTab() {
                       {formatTokensPerSecond(getTokensPerSecond(detail.tokens, detail.latency))}
                     </td>
                     <td className="p-4 text-sm text-text-main text-right font-mono whitespace-nowrap">
-                      {formatEstCost(detail.cost)}
+                      {formatEstCost(detail.cost, exchangeRate)}
                     </td>
                     <td className="p-4 text-center">
                       <Button
@@ -457,7 +461,7 @@ export default function RequestDetailsTab() {
               <div>
                 <span className="text-text-muted">Est. Cost:</span>{" "}
                 <span className="text-text-main font-mono">
-                  {formatEstCost(selectedDetail.cost)}
+                  {formatEstCost(selectedDetail.cost, exchangeRate)}
                 </span>
               </div>
             </div>
@@ -557,3 +561,9 @@ export default function RequestDetailsTab() {
     </div>
   );
 }
+
+RequestDetailsTab.propTypes = {
+  exchangeRate: PropTypes.shape({
+    rate: PropTypes.number.isRequired,
+  }),
+};

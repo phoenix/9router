@@ -216,6 +216,58 @@ describe("dashboard guard public LLM API access", () => {
   });
 });
 
+describe("dashboard guard protected API access", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.NINEROUTER_PEER_TOKEN = PEER_TOKEN;
+    mocks.getSettings.mockResolvedValue({ requireLogin: true });
+    mocks.validateApiKey.mockResolvedValue(false);
+    mocks.getConsistentMachineId.mockResolvedValue("cli-token");
+    mocks.verifyDashboardAuthToken.mockResolvedValue(false);
+  });
+
+  it("rejects unauthenticated exchange-rate requests", async () => {
+    const response = await proxy(request("/api/exchange-rate", {
+      host: "router.example.com",
+    }));
+
+    expect(response.status).toBe(401);
+    expect(response.body.error).toBe("Unauthorized");
+  });
+
+  it("allows exchange-rate requests with a valid dashboard token", async () => {
+    const authenticatedRequest = request("/api/exchange-rate", {
+      host: "router.example.com",
+    });
+    authenticatedRequest.cookies.get = vi.fn(() => ({ value: "session-token" }));
+    mocks.verifyDashboardAuthToken.mockResolvedValue(true);
+
+    const response = await proxy(authenticatedRequest);
+
+    expect(response).toBe(mocks.nextResponse);
+    expect(mocks.verifyDashboardAuthToken).toHaveBeenCalledWith("session-token");
+  });
+
+  it("allows exchange-rate requests with a valid CLI token", async () => {
+    const response = await proxy(request("/api/exchange-rate", {
+      host: "router.example.com",
+      "x-9r-cli-token": "cli-token",
+    }));
+
+    expect(response).toBe(mocks.nextResponse);
+  });
+
+  it("allows exchange-rate requests when dashboard login is disabled", async () => {
+    mocks.getSettings.mockResolvedValue({ requireLogin: false });
+
+    const response = await proxy(request("/api/exchange-rate", {
+      host: "router.example.com",
+    }));
+
+    expect(response).toBe(mocks.nextResponse);
+  });
+});
+
 describe("dashboard guard local-only access", () => {
   beforeEach(() => {
     vi.clearAllMocks();

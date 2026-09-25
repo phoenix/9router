@@ -4,9 +4,9 @@ import { useState, useEffect, useCallback, useMemo, Fragment } from "react";
 import PropTypes from "prop-types";
 import Card from "@/shared/components/Card";
 import Badge from "@/shared/components/Badge";
+import { formatCnyCost } from "@/shared/utils/currency";
 
 const fmt = (n) => new Intl.NumberFormat().format(n || 0);
-const fmtCost = (n) => `$${(n || 0).toFixed(2)}`;
 
 function fmtTime(iso) {
   if (!iso) return "Never";
@@ -31,7 +31,7 @@ SortIcon.propTypes = {
 /**
  * Render 3 token or cost cells based on viewMode
  */
-function ValueCells({ item, viewMode, isSummary = false }) {
+function ValueCells({ item, viewMode, isSummary = false, exchangeRate }) {
   if (viewMode === "tokens") {
     return (
       <>
@@ -53,16 +53,16 @@ function ValueCells({ item, viewMode, isSummary = false }) {
   return (
     <>
       <td className="px-6 py-3 text-right text-text-muted">
-        {isSummary && item.inputCost === undefined ? "—" : fmtCost(item.inputCost)}
+        {isSummary && item.inputCost === undefined ? "—" : formatCnyCost(item.inputCost, exchangeRate)}
       </td>
       <td className="px-6 py-3 text-right text-text-muted">
-        {item.cachedCost ? fmtCost(item.cachedCost) : "—"}
+        {item.cachedCost ? formatCnyCost(item.cachedCost, exchangeRate) : "—"}
       </td>
       <td className="px-6 py-3 text-right text-text-muted">
-        {isSummary && item.outputCost === undefined ? "—" : fmtCost(item.outputCost)}
+        {isSummary && item.outputCost === undefined ? "—" : formatCnyCost(item.outputCost, exchangeRate)}
       </td>
       <td className="px-6 py-3 text-right font-medium text-warning">
-        {fmtCost(item.totalCost || item.cost)}
+        {formatCnyCost(item.totalCost ?? item.cost, exchangeRate)}
       </td>
     </>
   );
@@ -72,6 +72,9 @@ ValueCells.propTypes = {
   item: PropTypes.object.isRequired,
   viewMode: PropTypes.string.isRequired,
   isSummary: PropTypes.bool,
+  exchangeRate: PropTypes.shape({
+    rate: PropTypes.number.isRequired,
+  }),
 };
 
 /**
@@ -105,6 +108,7 @@ export default function UsageTable({
   renderDetailCells,
   renderSummaryCells,
   emptyMessage,
+  exchangeRate,
 }) {
   const [expanded, setExpanded] = useState(new Set());
 
@@ -145,9 +149,9 @@ export default function UsageTable({
       ];
     }
     return [
-      { field: "promptTokens", label: "Input Cost" },
+      { field: "inputCost", label: "Input Cost" },
       { field: "cachedCost", label: "Cached Cost" },
-      { field: "completionTokens", label: "Output Cost" },
+      { field: "outputCost", label: "Output Cost" },
       { field: "cost", label: "Total Cost" },
     ];
   }, [viewMode]);
@@ -204,7 +208,7 @@ export default function UsageTable({
                     </div>
                   </td>
                   {renderSummaryCells(group)}
-                  <ValueCells item={group.summary} viewMode={viewMode} isSummary />
+                  <ValueCells item={group.summary} viewMode={viewMode} isSummary exchangeRate={exchangeRate} />
                 </tr>
                 {/* Detail rows */}
                 {expanded.has(group.groupKey) && group.items.map((item) => (
@@ -213,7 +217,7 @@ export default function UsageTable({
                     className="group-detail hover:bg-bg-subtle/20 transition-colors"
                   >
                     {renderDetailCells(item)}
-                    <ValueCells item={item} viewMode={viewMode} />
+                    <ValueCells item={item} viewMode={viewMode} exchangeRate={exchangeRate} />
                   </tr>
                 ))}
               </Fragment>
@@ -249,7 +253,10 @@ UsageTable.propTypes = {
   renderDetailCells: PropTypes.func.isRequired,
   renderSummaryCells: PropTypes.func.isRequired,
   emptyMessage: PropTypes.string.isRequired,
+  exchangeRate: PropTypes.shape({
+    rate: PropTypes.number.isRequired,
+  }),
 };
 
 // Re-export utilities for use in UsageStats orchestrator
-export { fmt, fmtCost, fmtTime };
+export { fmt, fmtTime };

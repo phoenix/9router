@@ -2,11 +2,11 @@
 
 import PropTypes from "prop-types";
 import Card from "@/shared/components/Card";
+import { formatCnyCost } from "@/shared/utils/currency";
 
 const fmt = (n) => new Intl.NumberFormat().format(n || 0);
-const fmtCost = (n) => `$${(n || 0).toFixed(2)}`;
 
-export default function OverviewCards({ stats }) {
+export default function OverviewCards({ stats, exchangeRate }) {
   return (
     <div className="grid min-w-0 grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 sm:gap-4">
       <Card className="flex min-w-0 flex-col items-center text-center gap-1 px-3 py-3 sm:px-4">
@@ -27,7 +27,9 @@ export default function OverviewCards({ stats }) {
       </Card>
       <Card className="flex min-w-0 flex-col items-center text-center gap-1 px-3 py-3 sm:px-4">
         <span className="text-text-muted text-xs uppercase font-semibold sm:text-sm">Est. Cost</span>
-        <span className="w-full truncate text-lg font-bold text-warning xl:text-xl" title={`~${fmtCost(stats.totalCost)}`}>~{fmtCost(stats.totalCost)}</span>
+        <span className="w-full truncate text-lg font-bold text-warning xl:text-xl" title={`~${formatCnyCost(stats.totalCost, exchangeRate)}`}>
+          ~{formatCnyCost(stats.totalCost, exchangeRate)}
+        </span>
         <span className="text-[10px] text-text-muted">Estimated, not actual billing</span>
       </Card>
     </div>
@@ -36,4 +38,7 @@ export default function OverviewCards({ stats }) {
 
 OverviewCards.propTypes = {
   stats: PropTypes.object.isRequired,
+  exchangeRate: PropTypes.shape({
+    rate: PropTypes.number.isRequired,
+  }),
 };
