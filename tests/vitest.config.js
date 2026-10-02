@@ -9,6 +9,7 @@ export default defineConfig({
     environment: "node",
     globals: true,
     include: ["**/*.test.js"],
+    setupFiles: ["./setup.js"],
     // Suppress noisy console output from handlers under test
     silent: false,
   },
@@ -16,6 +17,8 @@ export default defineConfig({
     alias: {
       // Resolve open-sse/* imports to the actual local package
       "open-sse": resolve(__dirname, "../open-sse"),
+      // Mirror the app's @/* -> src/* alias (jsconfig.json)
+      "@": resolve(__dirname, "../src"),
     },
   },
 });
