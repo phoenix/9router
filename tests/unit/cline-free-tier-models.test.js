@@ -110,7 +110,9 @@ describe("cline-free namespace pricing", () => {
   it("still bills the paid twin at its published rate", async () => {
     const { getPricingForModel } = await import("../../open-sse/providers/pricing.js");
     expect(getPricingForModel("cline", "deepseek/deepseek-v4.1-flash").input).toBe(0.14);
-    expect(getPricingForModel("cline", "meta/muse-spark-1.3-contributor")).toBeNull();
+    // `meta/` is the official Meta Model API namespace (Muse provider): the
+    // contributor tier resolves through it, so it is no longer an unknown model.
+    expect(getPricingForModel("cline", "meta/muse-spark-1.3-contributor").input).toBe(0.1);
   });
 
   it("zero price survives cost calculation over a large usage", async () => {

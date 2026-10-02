@@ -44,8 +44,14 @@ describe("free-variant pricing maps to its paid base model", () => {
 
     it("muse-spark-1.3 has official pricing", () => {
       expect(MODEL_PRICING["muse-spark-1.3"]).toBeDefined();
-      expect(MODEL_PRICING["muse-spark-1.3"].input).toBe(0.1);
-      expect(MODEL_PRICING["muse-spark-1.3"].output).toBe(0.2);
+      expect(MODEL_PRICING["muse-spark-1.3"].input).toBe(1.25);
+      expect(MODEL_PRICING["muse-spark-1.3"].output).toBe(4.25);
+    });
+
+    it("muse-spark-1.3-contributor has the cheaper contributor rate", () => {
+      expect(MODEL_PRICING["muse-spark-1.3-contributor"]).toBeDefined();
+      expect(MODEL_PRICING["muse-spark-1.3-contributor"].input).toBe(0.1);
+      expect(MODEL_PRICING["muse-spark-1.3-contributor"].output).toBe(0.2);
     });
 
     it("muse-spark-1.2 has official pricing", () => {
