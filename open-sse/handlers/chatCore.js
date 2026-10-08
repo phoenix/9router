@@ -93,7 +93,16 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   // sourceFormat-matched transport if that format is declared (opencode-go models
   // differ — kimi/glm only do /chat/completions). Undeclared models keep the
   // upstream default (use the transport), preserving behavior for glm/deepseek/...
-  const useTransport = (!modelSupportedFormats || modelSupportedFormats.includes(sourceFormat)) ? runtimeTransport : null;
+  // When the client's wire format is NOT among the model's supportedFormats, fall
+  // back to the transport for the model's declared targetFormat so the URL always
+  // matches the translated body. Without this, a Responses-only model (e.g. Muse
+  // Spark: supportedFormats ["openai-responses"]) requested by an OpenAI client is
+  // translated to the Responses body (`input`) yet POSTed to the default Chat
+  // Completions URL, and upstream rejects it: "unknown parameter `input`".
+  const modelTargetTransport = modelTargetFormat ? resolveTransport(provider, modelTargetFormat) : null;
+  const useTransport = (!modelSupportedFormats || modelSupportedFormats.includes(sourceFormat))
+    ? runtimeTransport
+    : modelTargetTransport;
   // A source-format-matched endpoint keeps the request lossless. Prefer it
   // over a model-level targetFormat, which is only the fallback for clients
   // whose wire format has no supported transport (for example MiniMax-M3:
@@ -523,11 +532,15 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   const trackDone = () => trackPendingRequest(model, provider, connectionId, false);
 
   // Upstream is streaming, but the client asked for a single JSON body:
-  //   - provider forced streaming (codex, openbuddy, ...), or
-  //   - we promoted a json_object request to streaming upstream above.
+  //   - provider forced streaming (codex, openbuddy, ...),
+  //   - we promoted a json_object request to streaming upstream above, or
+  //   - the Responses wire always streams upstream (openaiToOpenAIResponsesRequest
+  //     pins stream:true), so a non-stream OpenAI/native client behind a Responses
+  //     upstream must also take this path.
   // Either way the SSE must be re-assembled into one JSON document before it
   // reaches the client, which never asked for (and cannot parse) SSE.
-  if (!clientRequestedStreaming && (providerRequiresStreaming || jsonObjectStreaming)) {
+  // handleForcedSSEToJson returns null when the body is not SSE.
+  if (!clientRequestedStreaming && (providerRequiresStreaming || jsonObjectStreaming || providerResponseFormat === FORMATS.OPENAI_RESPONSES)) {
     const result = await handleForcedSSEToJson({ ...sharedCtx, providerResponse, sourceFormat, targetFormat: providerResponseFormat, customToolNames, toolNameMap, trackDone, appendLog, signal: streamController.signal, stallTimeoutMs: PROVIDERS[provider]?.stallTimeoutMs || STREAM_STALL_TIMEOUT_MS });
     if (result) { streamController.handleComplete(); return result; }
   }
