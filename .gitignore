@@ -104,3 +104,13 @@ graphify-out/*
 .start-dev.ps1
 start-dev-silent.cjs
 debug.log
+
+# Local pnpm artifacts (this repo installs per-package; lockfiles are npm's)
+pnpm-lock.yaml
+cli/pnpm-lock.yaml
+
+# DSH ACL recovery reports (session tooling)
+.dsh-acl-recovery/
+
+# Local-only maintenance scripts
+scripts/cleanup-test-connections.py
