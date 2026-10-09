@@ -31,6 +31,15 @@ function sanitize(headers) {
       ? v.replace(/Bearer .+/, "Bearer <TOK>")
           .replace(/sk-test-APIKEY|tok-test-ACCESS/g, "<CRED>")
           .replace(/kimi-\d{10,}/g, "kimi-<TS>")
+          // minimax-code (mcode) mints a random X-Mavis-Session-Id per request
+          // (default.js minimaxHeaders) — mask it or every run "fails" the golden.
+          .replace(/^[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/i, "<UUID>")
+          // Version-stamped headers follow package.json (0.5.95 → 0.5.99 → …),
+          // so pin them to a placeholder instead of chasing every bump.
+          // Strict semver (\d+\.\d+\.\d+ with optional pre-release/build) so
+          // numeric headers like Retry-Count "0" or Timeout "600" stay intact.
+          .replace(/9Router\/[\d.]+/, "9Router/<VER>")
+          .replace(/^\d+\.\d+\.\d+(?:[-+][\w.-]+)?$/, "<VER>")
       : v;
   }
   return out;
