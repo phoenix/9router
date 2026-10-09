@@ -74,7 +74,10 @@ $tarItem = Get-Item $tarPath
 if ($tarItem.LastWriteTime -lt (Get-Date).AddHours(-2)) {
   Fail "tarball is stale (built $($tarItem.LastWriteTime)) — rebuild without -SkipBuild"
 }
-$list = tar -tzf $tarPath
+# GNU tar (msys2/Git for Windows) interprets "E:\path" as host:path (remote over rsh)
+# and dies with "Cannot connect to E: resolve failed". CWD is already $repo, so a
+# bare relative name avoids drive-letter paths entirely and works on every tar.
+$list = tar -tzf $tarName
 if (-not $list) { Fail "could not list tarball contents" }
 $tarMB = [math]::Round($tarItem.Length / 1MB, 1)
 Ok "tarball $tarName ($tarMB MB, built $($tarItem.LastWriteTime.ToString('HH:mm:ss')))"

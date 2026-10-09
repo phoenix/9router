@@ -54,3 +54,4 @@ npx vitest run unit translator --reporter=json --outputFile=<绝对路径>.json
 - 本机 Node：`D:\Programs\node\`；pnpm：`X:\.npm\pnpm.cmd`；store：`E:\.pnpm-store\v11`
 - vitest 4.x + `tests/vitest.config.js`（setupFiles + `open-sse`/`@` 别名）
 - 9router 服务部署在别处（AI 服务器，见 Hindsight），本仓库是开发副本
+- **tar 陷阱**：PATH 首位是 msys2 的 GNU tar（`D:\msys64\usr\bin\tar.exe`），它把 `E:\path` 这类盘符绝对路径解析为 `host:path` 远程语法，报 `Cannot connect to E: resolve failed` + `unexpected end of file`（tarball 本身没坏）。**tar 操作一律先 cd 到目标目录再用相对路径**（Windows 自带的 `C:\Windows\System32\tar.exe` 是 libarchive，无此问题但别依赖 PATH 顺序）
