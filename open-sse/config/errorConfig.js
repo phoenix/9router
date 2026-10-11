@@ -38,6 +38,39 @@ export const BACKOFF_CONFIG = {
 // Default cooldown for transient/unknown errors
 export const TRANSIENT_COOLDOWN_MS = 30 * 1000;
 
+/**
+ * Which question a fallback decision is answering. The same HTTP status can be
+ * request-scoped for one caller and provider-scoped for another, so the two
+ * questions must not share one predicate.
+ *   - ACCOUNT: "should this credential cool down?" A request-shape 4xx says
+ *     nothing about the credential, so the account stays healthy.
+ *   - MODEL:   "should the combo try its next model?" A request-shape 4xx will
+ *     fail identically on every member, so it is pointless to continue; anything
+ *     else (a dead endpoint, a timeout, a conflict) is worth another member.
+ */
+export const FALLBACK_SCOPE = {
+  ACCOUNT: "account",
+  MODEL: "model",
+};
+
+/**
+ * Statuses that are the request's own fault: context overflow, malformed body,
+ * unsupported parameter, unprocessable entity. Retrying these on another model
+ * wastes a round trip and usually reproduces the same failure.
+ */
+export const REQUEST_SCOPED_STATUSES = [400, 422];
+
+/**
+ * Statuses where the provider — not the request — is at fault, so a combo should
+ * move on to its next member. 451 is the motivating case: opencode zen answers
+ * `451 Endpoint is unavailable` when a model is pulled from its endpoint, which
+ * used to be swallowed by a blanket "4xx never falls back" guard while four
+ * healthy combo members sat untried. The rest are transport/availability codes
+ * (timeout, conflict, too large for this endpoint, range/range-unsatisfiable,
+ * locked, too early, header fields too large) that a sibling model can serve.
+ */
+export const MODEL_SCOPED_FALLBACK_STATUSES = [408, 409, 413, 416, 423, 425, 431, 451];
+
 // Hard cap for provider-reported rate limit cooldown (e.g. codex resets_at can be 5-6h)
 export const MAX_RATE_LIMIT_COOLDOWN_MS = 30 * 60 * 1000;
 

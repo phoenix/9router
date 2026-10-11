@@ -1,4 +1,11 @@
-import { ERROR_RULES, BACKOFF_CONFIG, TRANSIENT_COOLDOWN_MS } from "../config/errorConfig.js";
+import {
+  ERROR_RULES,
+  BACKOFF_CONFIG,
+  TRANSIENT_COOLDOWN_MS,
+  FALLBACK_SCOPE,
+  REQUEST_SCOPED_STATUSES,
+  MODEL_SCOPED_FALLBACK_STATUSES,
+} from "../config/errorConfig.js";
 
 /**
  * Calculate exponential backoff cooldown for rate limits (429)
@@ -13,14 +20,17 @@ export function getQuotaCooldown(backoffLevel = 0) {
 }
 
 /**
- * Check if error should trigger account fallback (switch to next account)
+ * Check if error should trigger fallback (switch to next account, or — in the
+ * MODEL scope — to the next combo model).
  * Config-driven: matches ERROR_RULES top-to-bottom (text rules first, then status)
  * @param {number} status - HTTP status code
  * @param {string} errorText - Error message text
  * @param {number} backoffLevel - Current backoff level for exponential backoff
+ * @param {string|null} provider - Provider id, for provider-scoped rules
+ * @param {string} scope - FALLBACK_SCOPE.ACCOUNT (default) or FALLBACK_SCOPE.MODEL
  * @returns {{ shouldFallback: boolean, cooldownMs: number, newBackoffLevel?: number }}
  */
-export function checkFallbackError(status, errorText, backoffLevel = 0, provider = null) {
+export function checkFallbackError(status, errorText, backoffLevel = 0, provider = null, scope = FALLBACK_SCOPE.ACCOUNT) {
   const lowerError = errorText
     ? (typeof errorText === "string" ? errorText : JSON.stringify(errorText)).toLowerCase()
     : "";
@@ -56,6 +66,24 @@ export function checkFallbackError(status, errorText, backoffLevel = 0, provider
   // same limit. Hand the upstream error back for this request instead.
   // Account-scoped statuses keep their rules above (401/402/403/404/429), and the
   // text rules still win for rate-limit / quota / capacity wording.
+  //
+  // The question "should this credential cool down?" is NOT the question "should
+  // the combo try its next model?" — a 451 "endpoint is unavailable" is
+  // provider-scoped, so the account stays healthy while the combo moves on. The
+  // caller passes its scope explicitly; ACCOUNT is the default so every existing
+  // caller keeps its current behaviour.
+  if (scope === FALLBACK_SCOPE.MODEL) {
+    // A combo only wastes a round trip when the request itself is at fault: every
+    // member would reject the same body. Anything else — a dead endpoint, a
+    // timeout, a conflict — is worth another member.
+    if (REQUEST_SCOPED_STATUSES.includes(status)) {
+      return { shouldFallback: false, cooldownMs: 0 };
+    }
+    if (MODEL_SCOPED_FALLBACK_STATUSES.includes(status)) {
+      return { shouldFallback: true, cooldownMs: TRANSIENT_COOLDOWN_MS };
+    }
+  }
+
   if (status >= 400 && status < 500 && status !== 401 && status !== 402 && status !== 403 && status !== 429) {
     return { shouldFallback: false, cooldownMs: 0 };
   }

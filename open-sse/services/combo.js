@@ -3,6 +3,8 @@
  */
 
 import { checkFallbackError, formatRetryAfter } from "./accountFallback.js";
+import { FALLBACK_SCOPE } from "../config/errorConfig.js";
+import { resolveProviderAlias } from "./model.js";
 import { unavailableResponse } from "../utils/error.js";
 import { getCapabilitiesForModel } from "../providers/capabilities.js";
 import { extractTextContent } from "../translator/formats/gemini.js";
@@ -331,8 +333,16 @@ export async function handleComboChat({ body, models, handleSingleModel, log, co
         try { errorText = JSON.stringify(errorText); } catch { errorText = String(errorText); }
       }
 
-      // Check if should fallback to next model
-      const { shouldFallback, cooldownMs } = checkFallbackError(result.status, errorText);
+      // Check if should fallback to next model. Scope is MODEL, not ACCOUNT: a
+      // dead endpoint (451), a timeout or a conflict is the provider's fault and
+      // the next combo member can serve it. Only a request-shape error (400/422)
+      // is worth stopping for, since every member would reject the same body.
+      // The provider is resolved alias→id so provider-scoped ERROR_RULES (keyed
+      // by id, e.g. "codex" — not the "cx" alias) can actually match; without
+      // this the provider argument was dead weight.
+      const rawProvider = modelStr.includes("/") ? modelStr.slice(0, modelStr.indexOf("/")) : null;
+      const modelProvider = rawProvider ? resolveProviderAlias(rawProvider) : null;
+      const { shouldFallback, cooldownMs } = checkFallbackError(result.status, errorText, 0, modelProvider, FALLBACK_SCOPE.MODEL);
 
       if (!shouldFallback) {
         log.warn("COMBO", `Model ${modelStr} failed (no fallback)`, { status: result.status });
