@@ -184,11 +184,17 @@ function judgeFrame(node, key = "", depth = 0) {
  * @param {Response} response - upstream 200 response with an SSE body
  * @param {Object} [opts]
  * @param {number} [opts.timeoutMs] - peek window; 0 disables (returns not-empty)
- * @returns {Promise<{empty: false, response: Response} | {empty: true, reason: string}>}
+ * @param {boolean} [opts.releaseOnTimeout] - last-seat mode: on window timeout do
+ *   NOT cancel the stream; hand the untouched branch back via `response` so a
+ *   slow prefill keeps running (silence is suspicion, not proof of emptiness)
+ * @returns {Promise<{empty: false, response: Response} | {empty: true, reason: string, response?: Response}>}
  *   Never throws: on internal failure returns the original body rewrapped (fail-open).
+ *   With releaseOnTimeout, a timeout returns `reason: "timeout-released"` plus the
+ *   live rewrapped response — the caller must forward it, not treat it as a failure.
  */
 export async function peekSseEmptySeat(response, opts = {}) {
   const timeoutMs = opts.timeoutMs ?? COMBO_SSE_EMPTY_PEEK_TIMEOUT_MS;
+  const releaseOnTimeout = opts.releaseOnTimeout === true;
   if (!timeoutMs || timeoutMs <= 0 || !response?.body) {
     return { empty: false, response };
   }
@@ -207,6 +213,23 @@ export async function peekSseEmptySeat(response, opts = {}) {
     headers: response.headers
   });
 
+  // Window burned with no frame at all: kill both branches (dead seat) — or,
+  // in last-seat mode, hand the untouched branch back so a slow prefill can
+  // still finish (killing it would trade a fake success for a fake failure).
+  const timeoutOutcome = () => {
+    if (releaseOnTimeout) {
+      // Keep draining the peek branch in the background: the abandoned read()
+      // resolves once and then the queue refills and backpressures upstream
+      // again — an unowned pump loop is what actually keeps it unblocked.
+      const pump = () => reader.read().then((r) => { if (!r.done) pump(); }).catch(() => {});
+      pump();
+      return { empty: true, reason: "timeout-released", response: rewrap() };
+    }
+    reader.cancel().catch(() => {});
+    clientBranch.cancel().catch(() => {});
+    return { empty: true, reason: "timeout-no-data" };
+  };
+
   const reader = peekBranch.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
@@ -221,9 +244,7 @@ export async function peekSseEmptySeat(response, opts = {}) {
       wait.catch(() => {});
       const remaining = deadline - Date.now();
       if (remaining <= 0) {
-        reader.cancel().catch(() => {});
-        clientBranch.cancel().catch(() => {});
-        return { empty: true, reason: "timeout-no-data" };
+        return timeoutOutcome();
       }
       // Race the chunk against the peek window: first byte wins instantly
       // (TTFT untouched), only genuine silence burns the window.
@@ -240,9 +261,7 @@ export async function peekSseEmptySeat(response, opts = {}) {
         );
       });
       if (result === null) {
-        reader.cancel().catch(() => {});
-        clientBranch.cancel().catch(() => {});
-        return { empty: true, reason: "timeout-no-data" };
+        return timeoutOutcome();
       }
       if (result.done) break;
       buffer += decoder.decode(result.value, { stream: true });

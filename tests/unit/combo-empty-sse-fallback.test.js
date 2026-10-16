@@ -211,7 +211,7 @@ describe("combo: empty SSE 200 on a non-final seat falls through to the next mod
     expect(text).toContain("hello");
   });
 
-  it("still returns the last seat's empty stream as-is (nothing to fall back to)", async () => {
+  it("returns 502 when the LAST seat's stream terminates with no answer content (no earlier seat left)", async () => {
     const calls = [];
     const handleSingleModel = async (_body, modelStr) => {
       calls.push(modelStr);
@@ -223,13 +223,67 @@ describe("combo: empty SSE 200 on a non-final seat falls through to the next mod
       models: ["prov/empty-final"],
       handleSingleModel,
       log: logStub,
-      comboName: "sse-last-seat",
+      comboName: "sse-last-seat-proven-dead",
       comboStrategy: "fallback",
     });
 
     expect(calls).toEqual(["prov/empty-final"]);
+    expect(response.ok).toBe(false);
+    expect(response.status).toBe(502);
+    const payload = await response.json();
+    expect(payload?.error?.message).toContain("empty response");
+  });
+
+  it("returns 502 for a single-model combo whose stream dumps everything into reasoning", async () => {
+    const REASONING_FRAME = { id: "chatcmpl-think", choices: [{ index: 0, delta: { reasoning_content: "analysis..." }, finish_reason: null }] };
+    const handleSingleModel = async () => okSse([REASONING_FRAME, { ...EMPTY_FINISH_FRAME, id: "chatcmpl-think" }]);
+
+    const response = await handleComboChat({
+      body: { model: "my-combo", messages: [{ role: "user", content: "hi" }], stream: true },
+      models: ["prov/solo-thinker"],
+      handleSingleModel,
+      log: logStub,
+      comboName: "sse-single-thought-only",
+      comboStrategy: "fallback",
+    });
+
+    expect(response.status).toBe(502);
+  });
+
+  it("still returns the last seat's stream when reasoning is followed by real content", async () => {
+    const REASONING_FRAME = { id: "chatcmpl-think", choices: [{ index: 0, delta: { reasoning_content: "thinking first" }, finish_reason: null }] };
+    const handleSingleModel = async () => okSse([REASONING_FRAME, CONTENT_DELTA_FRAME, FINAL_CONTENT_FRAME]);
+
+    const response = await handleComboChat({
+      body: { model: "my-combo", messages: [{ role: "user", content: "hi" }], stream: true },
+      models: ["prov/think-then-answer"],
+      handleSingleModel,
+      log: logStub,
+      comboName: "sse-single-think-then-answer",
+      comboStrategy: "fallback",
+    });
+
     expect(response.ok).toBe(true);
     const text = await readText(response);
-    expect(text).toContain("[DONE]");
+    expect(text).toContain("hello");
+  });
+
+  it("passes a silent last seat through unchanged after the peek window (slow prefill must not die)", async () => {
+    const NEVER_SENDING_SEAT = new ReadableStream({ start(c) { /* never enqueues, never closes */ } });
+    const handleSingleModel = async () =>
+      new Response(NEVER_SENDING_SEAT, { status: 200, headers: { "content-type": "text/event-stream" } });
+
+    const response = await handleComboChat({
+      body: { model: "my-combo", messages: [{ role: "user", content: "hi" }], stream: true },
+      models: ["prov/slow-last"],
+      handleSingleModel,
+      log: logStub,
+      comboName: "sse-silent-last-seat",
+      comboStrategy: "fallback",
+      comboSsePeekTimeoutMs: 60,
+    });
+
+    expect(response.ok).toBe(true);
+    expect(response.status).toBe(200);
   });
 });
