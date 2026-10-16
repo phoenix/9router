@@ -3,6 +3,7 @@
  */
 
 import { checkFallbackError, formatRetryAfter } from "./accountFallback.js";
+import { peekSseEmptySeat } from "./comboSsePeek.js";
 import { FALLBACK_SCOPE } from "../config/errorConfig.js";
 import { resolveProviderAlias } from "./model.js";
 import { unavailableResponse } from "../utils/error.js";
@@ -344,7 +345,7 @@ export async function handleComboChat({ body, models, handleSingleModel, log, co
     log.info("COMBO", `Trying model ${i + 1}/${rotatedModels.length}: ${modelStr}`);
 
     try {
-      const result = await handleSingleModel(body, modelStr);
+      let result = await handleSingleModel(body, modelStr);
       
       // Success (2xx) - return response unless empty/zero-content on a non-final seat
       if (result.ok) {
@@ -363,6 +364,22 @@ export async function handleComboChat({ body, models, handleSingleModel, log, co
             } catch {
               // Ignore JSON parse errors
             }
+          } else if (contentType.includes("text/event-stream")) {
+            // An SSE seat cannot be inspected without draining bytes, so peek a
+            // tee'd branch: content/tool-call/reasoning in the first frames (or
+            // a client-received first byte within the window) returns the seat
+            // byte-for-byte unchanged; a silent/zero-delta/error-frame stream
+            // falls through to the next model instead of surfacing a fake
+            // "succeeded" empty 200 ( symptom: 📊 DONE with IN 0 · OUT 0).
+            // Binary/NDJSON upstreams never reach here (content-type gate).
+            const peek = await peekSseEmptySeat(result);
+            if (peek.empty) {
+              log.warn("COMBO", `Model ${modelStr} returned HTTP 200 with an empty SSE stream (${peek.reason}), falling back to next model`);
+              lastError = `Empty SSE stream (${peek.reason})`;
+              lastStatus = 200;
+              continue;
+            }
+            result = peek.response; // client-side tee branch — bytes and order preserved
           }
         }
 

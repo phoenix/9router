@@ -52,6 +52,17 @@ export const SEARXNG_URL = envUrl("SEARXNG_URL", "http://localhost:8888/search")
 // slow reasoning models aren't aborted mid-stream. Env: STREAM_STALL_TIMEOUT_MS.
 export const STREAM_STALL_TIMEOUT_MS = envMs("STREAM_STALL_TIMEOUT_MS", 360 * 1000);
 
+// Non-final combo seats: how long to peek an upstream SSE stream before judging
+// it empty and falling back to the next model. Judged empty: no bytes, only a
+// terminal marker, or a stream that ends with reasoning but an EMPTY answer
+// field (model dumped its output into thinking — reasoning mid-stream never
+// triggers this; thinking deltas before the answer are normal and pass straight
+// through). An empty-200 upstream (e.g. a preview model that silently answers
+// with zero deltas) used to be returned to the client as "succeeded" with
+// IN 0/OUT 0. 0 disables the peek (seat streams straight through).
+// Env: COMBO_SSE_EMPTY_PEEK_TIMEOUT_MS.
+export const COMBO_SSE_EMPTY_PEEK_TIMEOUT_MS = envMs("COMBO_SSE_EMPTY_PEEK_TIMEOUT_MS", 10 * 1000);
+
 // Time-to-first-token timeout (prompt prefill). Env: STREAM_FIRST_CHUNK_TIMEOUT_MS.
 export const STREAM_FIRST_CHUNK_TIMEOUT_MS = envMs("STREAM_FIRST_CHUNK_TIMEOUT_MS", 200 * 1000);
 
