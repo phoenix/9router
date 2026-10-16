@@ -295,6 +295,23 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
 }
 
 /**
+ * Mark a seat that answered HTTP 200 with zero usable content (OUT 0) as
+ * unavailable — the model cools down even though the HTTP layer saw "success".
+ * Reuses markAccountUnavailable with a synthetic 502 so the modelLock_,
+ * dashboard error state, and success-based recovery behave identically to a
+ * real upstream failure; no ERROR_RULES text matches, so the cooldown is the
+ * plain TRANSIENT_COOLDOWN_MS with no backoff escalation.
+ * @param {string} connectionId
+ * @param {string|null} provider
+ * @param {string|null} model
+ * @param {string} reason - why the seat was judged dead (done-no-content / thought-only / error-frame)
+ * @returns {Promise<{ shouldFallback: boolean, cooldownMs: number }>}
+ */
+export async function markSeatEmptyUnavailable(connectionId, provider, model, reason = "empty response") {
+  return markAccountUnavailable(connectionId, 502, `Upstream returned an empty response (${reason})`, provider, model);
+}
+
+/**
  * Clear account error status on successful request.
  * - Clears modelLock_${model} (the model that just succeeded)
  * - Lazy-cleans any other expired modelLock_* keys

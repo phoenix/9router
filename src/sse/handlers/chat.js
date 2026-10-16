@@ -3,6 +3,7 @@ import "open-sse/index.js";
 import {
   getProviderCredentials,
   markAccountUnavailable,
+  markSeatEmptyUnavailable,
   clearAccountError,
   extractApiKey,
   isValidApiKey,
@@ -26,6 +27,28 @@ import { updateProviderCredentials, checkAndRefreshToken } from "../services/tok
 import { getProjectIdForConnection } from "open-sse/services/projectId.js";
 import { stripModelContextMarker } from "open-sse/utils/modelMarkers.js";
 import { getKeyAccessContext, enforceKeyAccess, filterAdapterModels } from "../services/keyAccess.js";
+
+// Seat responses are opaque to the combo layer; this map lets the onSeatEmpty
+// hook recover which connection served a proven-dead seat (HTTP 200 with zero
+// usable content) so that connection+model can be put into cooldown.
+const seatConnectionMeta = new WeakMap();
+
+/**
+ * onSeatEmpty hook: a combo seat answered HTTP 200 with OUT 0 (proven dead —
+ * zero usable content / thought-only / error frame). Mark that connection+model
+ * unavailable so the next requests skip the dead seat instead of re-paying the
+ * empty-stream tax on every request. Fire-and-forget safety: never throws.
+ */
+async function onSeatEmptyCooldown(seatResponse, modelStr, reason) {
+  try {
+    const meta = seatResponse && seatConnectionMeta.get(seatResponse);
+    if (!meta?.connectionId) return; // no seat metadata (e.g. nested/other handler) — nothing to lock
+    await markSeatEmptyUnavailable(meta.connectionId, meta.provider, meta.model, reason);
+    log.warn("FALLBACK", `⇄ ACC:${String(meta.connectionId).slice(0, 8)} EMPTY SEAT (${reason}) → modelLock_${meta.model} cooldown`);
+  } catch (error) {
+    log.warn("CHAT", `onSeatEmpty cooldown failed: ${error?.message || error}`);
+  }
+}
 
 /**
  * Handle chat completion request
@@ -143,7 +166,8 @@ export async function handleChat(request, clientRawRequest = null) {
       log,
       comboName: modelStr,
       comboStrategy,
-      comboStickyLimit
+      comboStickyLimit,
+      onSeatEmpty: onSeatEmptyCooldown
     });
   }
 
@@ -162,7 +186,8 @@ export async function handleChat(request, clientRawRequest = null) {
       ),
       log,
       comboName: modelStr,
-      comboStrategy: getActiveAdapterStrategy(requiredCapabilities, settings)
+      comboStrategy: getActiveAdapterStrategy(requiredCapabilities, settings),
+      onSeatEmpty: onSeatEmptyCooldown
     });
   }
 
@@ -223,7 +248,8 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
         log,
         comboName: modelStr,
         comboStrategy,
-        comboStickyLimit
+        comboStickyLimit,
+        onSeatEmpty: onSeatEmptyCooldown
       });
     }
     log.warn("CHAT", "Invalid model format", { model: modelStr });
@@ -322,7 +348,12 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       }
     });
 
-    if (result.success) return result.response;
+    if (result.success) {
+      // Remember which connection served this seat so a proven-dead empty seat
+      // (OUT 0) can be locked later by the combo's onSeatEmpty hook.
+      try { seatConnectionMeta.set(result.response, { connectionId: credentials.connectionId, provider, model }); } catch { }
+      return result.response;
+    }
 
     // Antigravity 409/429: refresh live quota to get exact resetAt before locking
     let quotaResetMs = null;

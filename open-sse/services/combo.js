@@ -313,9 +313,14 @@ export function isZeroContentResponse(data) {
  * @param {string} [options.comboStrategy] - Strategy: "fallback" or "round-robin"
  * @param {number|string} [options.comboStickyLimit=1] - Requests per combo model before switching
  * @param {number} [options.comboSsePeekTimeoutMs] - SSE empty-stream peek window override (ms)
+ * @param {Function} [options.onSeatEmpty] - (seatResponse, modelStr, reason) => void|Promise, invoked
+ *   ONCE per PROVEN-DEAD seat (JSON zero-content, or SSE done-no-content / thought-only /
+ *   error-frame) so the caller can feed the account cooldown machinery (OUT 0 = failure).
+ *   NEVER invoked for a released silent last seat ("timeout-released") — silence is
+ *   suspicion, not proof, and locking a slow-thinking model would be a false strike.
  * @returns {Promise<Response>}
  */
-export async function handleComboChat({ body, models, handleSingleModel, log, comboName, comboStrategy, comboStickyLimit = 1, autoSwitch = true, comboSsePeekTimeoutMs }) {
+export async function handleComboChat({ body, models, handleSingleModel, log, comboName, comboStrategy, comboStickyLimit = 1, autoSwitch = true, comboSsePeekTimeoutMs, onSeatEmpty }) {
   // Apply rotation strategy if enabled
   let rotatedModels = getRotatedModels(models, comboName, comboStrategy, comboStickyLimit);
 
@@ -365,6 +370,7 @@ export async function handleComboChat({ body, models, handleSingleModel, log, co
               log.warn("COMBO", `Model ${modelStr} returned HTTP 200 with zero usable content, falling back to next model`);
               lastError = "Zero usable content";
               lastStatus = 200;
+              try { await onSeatEmpty?.(result, modelStr, "done-no-content"); } catch { /* hook must never break the fallthrough */ }
               continue;
             }
           } catch {
@@ -392,6 +398,7 @@ export async function handleComboChat({ body, models, handleSingleModel, log, co
               // an upstream error frame). Nothing to fall back to: fail honestly
               // so clients can retry and usage records show the truth.
               log.warn("COMBO", `Model ${modelStr} returned HTTP 200 with an empty SSE stream (${peek.reason}), no seat left to fall back to`);
+              try { await onSeatEmpty?.(result, modelStr, peek.reason); } catch { /* hook must never break the 502 */ }
               return new Response(
                 JSON.stringify({ error: { message: `Upstream model ${modelStr} returned an empty response (${peek.reason})`, combo: comboName || null } }),
                 { status: 502, headers: { "Content-Type": "application/json" } }
@@ -400,6 +407,12 @@ export async function handleComboChat({ body, models, handleSingleModel, log, co
             log.warn("COMBO", `Model ${modelStr} returned HTTP 200 with an empty SSE stream (${peek.reason}), falling back to next model`);
             lastError = `Empty SSE stream (${peek.reason})`;
             lastStatus = 200;
+            // Lock only on PROOF of death. A silent window (timeout-no-data) may
+            // just be a slow prefill — same rationale as releasing the silent
+            // last seat — so it falls through without striking the model.
+            if (peek.reason !== "timeout-no-data") {
+              try { await onSeatEmpty?.(result, modelStr, peek.reason); } catch { /* hook must never break the fallthrough */ }
+            }
             continue;
           }
           result = peek.response; // client-side tee branch — bytes and order preserved

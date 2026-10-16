@@ -42,6 +42,24 @@ const TOOL_CALL_DELTA_FRAME = {
   ],
 };
 
+const REASONING_DELTA_FRAME = {
+  id: "chatcmpl-think",
+  choices: [{ index: 0, delta: { reasoning_content: "hmm let me think" }, finish_reason: null }],
+};
+
+const okJson = (payload) =>
+  new Response(JSON.stringify(payload), { status: 200, headers: { "content-type": "application/json" } });
+
+const REAL_MESSAGE = {
+  id: "chatcmpl-real",
+  choices: [{ index: 0, message: { role: "assistant", content: "hello" }, finish_reason: "stop" }],
+};
+
+const THOUGHT_ONLY = {
+  id: "chatcmpl-think",
+  choices: [{ index: 0, message: { role: "assistant", content: "", reasoning_content: "all the JSON went here" }, finish_reason: "stop" }],
+};
+
 async function readText(response) {
   return response.text();
 }
@@ -289,20 +307,9 @@ describe("combo: empty SSE 200 on a non-final seat falls through to the next mod
 });
 
 describe("combo: non-streaming JSON zero-content responses", () => {
-  const okJson = (payload) =>
-    new Response(JSON.stringify(payload), { status: 200, headers: { "content-type": "application/json" } });
-
-  const REAL_MESSAGE = {
-    id: "chatcmpl-real",
-    choices: [{ index: 0, message: { role: "assistant", content: "hello" }, finish_reason: "stop" }],
-  };
   const EMPTY_STOP = {
     id: "chatcmpl-empty",
     choices: [{ index: 0, message: { role: "assistant", content: "" }, finish_reason: "stop" }],
-  };
-  const THOUGHT_ONLY = {
-    id: "chatcmpl-think",
-    choices: [{ index: 0, message: { role: "assistant", content: "", reasoning_content: "all the JSON went here" }, finish_reason: "stop" }],
   };
 
   it("falls back when a JSON seat answers with an empty content and a normal stop", async () => {
@@ -385,3 +392,165 @@ describe("combo: non-streaming JSON zero-content responses", () => {
     expect(payload?.error?.message).toContain("empty response");
   });
 });
+
+describe("combo: onSeatEmpty hook (proven-dead seats feed model cooldown)", () => {
+  // OUT 0 seats must not just fall through — they must be markable as failed so
+  // the account cooldown machinery locks modelLock_<model> and stops the combo
+  // from re-paying the empty-stream tax on every request.
+
+  it("fires onSeatEmpty when a non-final SSE seat is proven dead, with the seat response and reason", async () => {
+    const seatResponse = okSse([EMPTY_FINISH_FRAME]);
+    const events = [];
+    const handleSingleModel = async (_body, modelStr) => {
+      if (modelStr === "prov/empty-one") return seatResponse;
+      return okSse([CONTENT_DELTA_FRAME, FINAL_CONTENT_FRAME]);
+    };
+
+    await handleComboChat({
+      body: { model: "my-combo", messages: [{ role: "user", content: "hi" }], stream: true },
+      models: ["prov/empty-one", "prov/real-two"],
+      handleSingleModel,
+      log: logStub,
+      comboName: "hook-sse",
+      comboStrategy: "fallback",
+      onSeatEmpty: (response, modelStr, reason) => { events.push({ response, modelStr, reason }); },
+    });
+
+    expect(events).toHaveLength(1);
+    expect(events[0].modelStr).toBe("prov/empty-one");
+    expect(events[0].reason).toBe("done-no-content");
+    expect(events[0].response).toBe(seatResponse);
+  });
+
+  it("fires onSeatEmpty for a thought-only SSE seat", async () => {
+    const events = [];
+    const handleSingleModel = async (_body, modelStr) => {
+      if (modelStr === "prov/thinker") return okSse([REASONING_DELTA_FRAME, EMPTY_FINISH_FRAME]);
+      return okSse([CONTENT_DELTA_FRAME, FINAL_CONTENT_FRAME]);
+    };
+
+    await handleComboChat({
+      body: { model: "my-combo", messages: [{ role: "user", content: "hi" }], stream: true },
+      models: ["prov/thinker", "prov/real-two"],
+      handleSingleModel,
+      log: logStub,
+      comboName: "hook-thought",
+      comboStrategy: "fallback",
+      onSeatEmpty: (response, modelStr, reason) => { events.push({ modelStr, reason }); },
+    });
+
+    expect(events).toEqual([{ modelStr: "prov/thinker", reason: "thought-only" }]);
+  });
+
+  it("fires onSeatEmpty when a non-final JSON seat has zero usable content", async () => {
+    const seatResponse = okJson(THOUGHT_ONLY);
+    const events = [];
+    const handleSingleModel = async (_body, modelStr) => {
+      if (modelStr === "prov/thinker-json") return seatResponse;
+      return okJson(REAL_MESSAGE);
+    };
+
+    await handleComboChat({
+      body: { model: "my-combo", messages: [{ role: "user", content: "hi" }] },
+      models: ["prov/thinker-json", "prov/real-two"],
+      handleSingleModel,
+      log: logStub,
+      comboName: "hook-json",
+      comboStrategy: "fallback",
+      onSeatEmpty: (response, modelStr, reason) => { events.push({ response, modelStr, reason }); },
+    });
+
+    expect(events).toEqual([{ response: seatResponse, modelStr: "prov/thinker-json", reason: "done-no-content" }]);
+  });
+
+  it("does NOT fire onSeatEmpty when a healthy seat succeeds or content arrives after reasoning", async () => {
+    const events = [];
+    const handleSingleModel = async (_body, modelStr) => {
+      if (modelStr === "prov/thinker-real") return okSse([REASONING_DELTA_FRAME, CONTENT_DELTA_FRAME, FINAL_CONTENT_FRAME]);
+      return okSse([CONTENT_DELTA_FRAME, FINAL_CONTENT_FRAME]);
+    };
+
+    const response = await handleComboChat({
+      body: { model: "my-combo", messages: [{ role: "user", content: "hi" }], stream: true },
+      models: ["prov/thinker-real"],
+      handleSingleModel,
+      log: logStub,
+      comboName: "hook-healthy",
+      comboStrategy: "fallback",
+      onSeatEmpty: (response, modelStr, reason) => { events.push({ modelStr, reason }); },
+    });
+
+    expect(events).toHaveLength(0);
+    expect(response.ok).toBe(true);
+  });
+
+  it("does NOT fire onSeatEmpty for a released silent last seat", async () => {
+    const NEVER_SENDING_SEAT = new ReadableStream({ start(c) { /* never enqueues, never closes */ } });
+    const events = [];
+    const handleSingleModel = async () =>
+      new Response(NEVER_SENDING_SEAT, { status: 200, headers: { "content-type": "text/event-stream" } });
+
+    const response = await handleComboChat({
+      body: { model: "my-combo", messages: [{ role: "user", content: "hi" }], stream: true },
+      models: ["prov/slow-last"],
+      handleSingleModel,
+      log: logStub,
+      comboName: "hook-silent-last",
+      comboStrategy: "fallback",
+      comboSsePeekTimeoutMs: 60,
+      onSeatEmpty: (response, modelStr, reason) => { events.push({ modelStr, reason }); },
+    });
+
+    expect(response.ok).toBe(true);
+    expect(events).toHaveLength(0);
+  });
+
+  it("fires onSeatEmpty exactly once per dead seat when an error-frame seat falls through", async () => {
+    const events = [];
+    const handleSingleModel = async (_body, modelStr) => {
+      if (modelStr === "prov/error-frame") {
+        return okSse([{ error: { message: "upstream exploded" } }]);
+      }
+      return okSse([CONTENT_DELTA_FRAME, FINAL_CONTENT_FRAME]);
+    };
+
+    await handleComboChat({
+      body: { model: "my-combo", messages: [{ role: "user", content: "hi" }], stream: true },
+      models: ["prov/error-frame", "prov/real-two"],
+      handleSingleModel,
+      log: logStub,
+      comboName: "hook-error-frame",
+      comboStrategy: "fallback",
+      onSeatEmpty: (response, modelStr, reason) => { events.push({ modelStr, reason }); },
+    });
+
+    expect(events).toEqual([{ modelStr: "prov/error-frame", reason: "error-frame" }]);
+  });
+
+  it("does NOT fire onSeatEmpty for a non-final seat that was merely silent (slow prefill)", async () => {
+    const events = [];
+    const handleSingleModel = async (_body, modelStr) => {
+      if (modelStr === "prov/silent") {
+        return new Response(NEVER_SENDING_SEAT_FACTORY(), { status: 200, headers: { "content-type": "text/event-stream" } });
+      }
+      return okSse([CONTENT_DELTA_FRAME, FINAL_CONTENT_FRAME]);
+    };
+
+    await handleComboChat({
+      body: { model: "my-combo", messages: [{ role: "user", content: "hi" }], stream: true },
+      models: ["prov/silent", "prov/real-two"],
+      handleSingleModel,
+      log: logStub,
+      comboName: "hook-silent-nonfinal",
+      comboStrategy: "fallback",
+      comboSsePeekTimeoutMs: 60,
+      onSeatEmpty: (response, modelStr, reason) => { events.push({ modelStr, reason }); },
+    });
+
+    expect(events).toHaveLength(0);
+  });
+});
+
+function NEVER_SENDING_SEAT_FACTORY() {
+  return new ReadableStream({ start(c) { /* never enqueues, never closes */ } });
+}
