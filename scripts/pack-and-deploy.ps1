@@ -36,11 +36,14 @@ if (-not $nextEntry) { Fail "next package not found under node_modules\.pnpm —
 $nftPath = Join-Path $nextEntry.FullName "node_modules\next\dist\compiled\@vercel\nft\index.js"
 if (-not (Test-Path $nftPath)) { Fail "nft tracing file not found: $nftPath" }
 $nftRaw = [System.IO.File]::ReadAllText($nftPath)
-$throwNeedle = 'if(s.has(e))throw new Error("Recursive symlink detected resolving "+e);'
-if ($nftRaw.Contains($throwNeedle)) {
-  [System.IO.File]::WriteAllText($nftPath, $nftRaw.Replace($throwNeedle, 'if(s.has(e))return e;'))
+# Anchor on the stable error string and capture the minified var names —
+# the letters change between next builds (s/e before, r/e in next@16.2.3).
+$throwRe = 'if\((\w+)\.has\((\w+)\)\)throw new Error\("Recursive symlink detected resolving "\+\2\);'
+if ($nftRaw -match $throwRe) {
+  $nftPatched = $nftRaw -replace $throwRe, 'if($1.has($2))return $2;'
+  [System.IO.File]::WriteAllText($nftPath, $nftPatched)
   Ok "nft recursive-symlink patch re-applied (was reset by a previous pnpm install)"
-} elseif ($nftRaw.Contains('if(s.has(e))return e;')) {
+} elseif ($nftRaw -match 'if\(\w+\.has\(\w+\)\)return \w+;') {
   Ok "nft recursive-symlink patch already in place"
 } else {
   Fail "nft index.js does not match the known patch anchors (next updated?) — patch manually"
