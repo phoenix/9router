@@ -270,8 +270,12 @@ export function getComboModelsFromData(modelStr, combosData) {
 
 /**
  * Detect whether a 2xx JSON response contains zero usable content
- * (e.g. empty assistant message with in_progress/incomplete)
- * so combo fallback can continue to the next model.
+ * (empty assistant answer) so combo fallback can continue to the next model.
+ * Strong signals only: answer text or tool calls. finish_reason and
+ * reasoning_content are NOT evidence of an answer — a model that terminates
+ * "normally" with an empty content field, or dumps the whole reply into its
+ * reasoning field, is still a dead seat (symptom: [No content] rows that the
+ * dashboard records as a success).
  */
 export function isZeroContentResponse(data) {
   if (!data || typeof data !== "object") return false;
@@ -286,23 +290,13 @@ export function isZeroContentResponse(data) {
     const content = msg?.content;
     const hasContent = typeof content === "string" ? content.trim().length > 0 : (Array.isArray(content) && content.length > 0);
     const hasToolCalls = (Array.isArray(msg?.tool_calls) && msg.tool_calls.length > 0) || Boolean(msg?.function_call);
-    const hasReasoning = typeof msg?.reasoning_content === "string" ? msg.reasoning_content.trim().length > 0 : false;
-
-    const finish = choice.finish_reason;
-    const isNormalFinish = finish === "stop" || finish === "length" || finish === "tool_calls" || finish === "function_call";
-
-    if (!hasContent && !hasToolCalls && !hasReasoning && (!isNormalFinish || finish === "in_progress" || finish === "incomplete")) {
-      return true;
-    }
+    if (!hasContent && !hasToolCalls) return true;
   }
 
   // Anthropic messages format
   if (Array.isArray(data.content)) {
     const hasContent = data.content.some((c) => (c.type === "text" && c.text?.trim().length > 0) || c.type === "tool_use");
-    const stopReason = data.stop_reason;
-    if (!hasContent && (!stopReason || stopReason === "in_progress" || stopReason === "incomplete")) {
-      return true;
-    }
+    if (!hasContent) return true;
   }
 
   return false;
@@ -359,6 +353,15 @@ export async function handleComboChat({ body, models, handleSingleModel, log, co
           try {
             const peekBody = await result.clone().json();
             if (isZeroContentResponse(peekBody)) {
+              // JSON body is already complete — judging it costs nothing, so the
+              // last seat gets no leniency here either: proven dead = honest 502.
+              if (isLastModel) {
+                log.warn("COMBO", `Model ${modelStr} returned HTTP 200 with zero usable content, no seat left to fall back to`);
+                return new Response(
+                  JSON.stringify({ error: { message: `Upstream model ${modelStr} returned an empty response (done-no-content)`, combo: comboName || null } }),
+                  { status: 502, headers: { "Content-Type": "application/json" } }
+                );
+              }
               log.warn("COMBO", `Model ${modelStr} returned HTTP 200 with zero usable content, falling back to next model`);
               lastError = "Zero usable content";
               lastStatus = 200;

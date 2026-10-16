@@ -287,3 +287,101 @@ describe("combo: empty SSE 200 on a non-final seat falls through to the next mod
     expect(response.status).toBe(200);
   });
 });
+
+describe("combo: non-streaming JSON zero-content responses", () => {
+  const okJson = (payload) =>
+    new Response(JSON.stringify(payload), { status: 200, headers: { "content-type": "application/json" } });
+
+  const REAL_MESSAGE = {
+    id: "chatcmpl-real",
+    choices: [{ index: 0, message: { role: "assistant", content: "hello" }, finish_reason: "stop" }],
+  };
+  const EMPTY_STOP = {
+    id: "chatcmpl-empty",
+    choices: [{ index: 0, message: { role: "assistant", content: "" }, finish_reason: "stop" }],
+  };
+  const THOUGHT_ONLY = {
+    id: "chatcmpl-think",
+    choices: [{ index: 0, message: { role: "assistant", content: "", reasoning_content: "all the JSON went here" }, finish_reason: "stop" }],
+  };
+
+  it("falls back when a JSON seat answers with an empty content and a normal stop", async () => {
+    const calls = [];
+    const handleSingleModel = async (_body, modelStr) => {
+      calls.push(modelStr);
+      if (modelStr === "prov/empty-json") return okJson(EMPTY_STOP);
+      return okJson(REAL_MESSAGE);
+    };
+
+    const response = await handleComboChat({
+      body: { model: "my-combo", messages: [{ role: "user", content: "hi" }] },
+      models: ["prov/empty-json", "prov/real-two"],
+      handleSingleModel,
+      log: logStub,
+      comboName: "json-empty-stop",
+      comboStrategy: "fallback",
+    });
+
+    expect(calls).toContain("prov/real-two");
+    const payload = await response.json();
+    expect(payload?.choices?.[0]?.message?.content).toContain("hello");
+  });
+
+  it("falls back when a JSON seat dumps its whole answer into reasoning_content", async () => {
+    const calls = [];
+    const handleSingleModel = async (_body, modelStr) => {
+      calls.push(modelStr);
+      if (modelStr === "prov/thinker-json") return okJson(THOUGHT_ONLY);
+      return okJson(REAL_MESSAGE);
+    };
+
+    const response = await handleComboChat({
+      body: { model: "my-combo", messages: [{ role: "user", content: "hi" }] },
+      models: ["prov/thinker-json", "prov/real-two"],
+      handleSingleModel,
+      log: logStub,
+      comboName: "json-thought-only",
+      comboStrategy: "fallback",
+    });
+
+    expect(calls).toContain("prov/real-two");
+  });
+
+  it("keeps a JSON seat whose reasoning is followed by real content", async () => {
+    const MIXED = {
+      id: "chatcmpl-mixed",
+      choices: [{ index: 0, message: { role: "assistant", content: "answer", reasoning_content: "think" }, finish_reason: "stop" }],
+    };
+    const handleSingleModel = async () => okJson(MIXED);
+
+    const response = await handleComboChat({
+      body: { model: "my-combo", messages: [{ role: "user", content: "hi" }] },
+      models: ["prov/mixed-json"],
+      handleSingleModel,
+      log: logStub,
+      comboName: "json-mixed",
+      comboStrategy: "fallback",
+    });
+
+    expect(response.ok).toBe(true);
+    const payload = await response.json();
+    expect(payload?.choices?.[0]?.message?.content).toBe("answer");
+  });
+
+  it("returns 502 when the last JSON seat is empty with a normal stop", async () => {
+    const handleSingleModel = async () => okJson(EMPTY_STOP);
+
+    const response = await handleComboChat({
+      body: { model: "my-combo", messages: [{ role: "user", content: "hi" }] },
+      models: ["prov/empty-json-final"],
+      handleSingleModel,
+      log: logStub,
+      comboName: "json-empty-last",
+      comboStrategy: "fallback",
+    });
+
+    expect(response.status).toBe(502);
+    const payload = await response.json();
+    expect(payload?.error?.message).toContain("empty response");
+  });
+});
