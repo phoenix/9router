@@ -133,6 +133,13 @@ function Install-Locally {
 function Deploy-Server([string]$target) {
   Write-Host "`n--- deploy to $target ---" -ForegroundColor Cyan
   if (-not $target) { Write-Host "  no server given, skipping" -ForegroundColor Yellow; return }
+  # scp takes exactly ONE colon. A target like "ai:ai" or "ai:/path" is a typo
+  # (the scp habit of typing "alias:") — this script always appends ":/tmp/" itself.
+  $target = $target.Trim().TrimEnd(':')
+  if ($target -notmatch '^[A-Za-z0-9._@-]+$') {
+    Write-Host "  invalid server '$target' — enter the ssh alias or user@host, no colon, no path" -ForegroundColor Red
+    return
+  }
   Info "uploading $tarName to ${target}:/tmp/ ..."
   scp $tarPath "${target}:/tmp/$tarName"
   if ($LASTEXITCODE -ne 0) { Fail "scp upload failed" }
@@ -150,7 +157,12 @@ function Deploy-Server([string]$target) {
   # injected the same way the ~/.bashrc function does, under a hard timeout so a
   # hanging probe can never wedge this script.
   Info "verifying global install (patch-injected, 25s timeout)..."
-  $verify = 'timeout 25 env FETCH_CONNECT_TIMEOUT_MS=15000 NODE_OPTIONS="--require $HOME/.9router/patch-probe.js" /opt/pnpm/bin/9router --version --skip-update 2>&1 | tail -1'
+  # Zero-space, zero-quote form (--require=PATH, literal $HOME for the remote shell).
+  # Windows ssh.exe strips embedded double quotes across the parameter chain, so
+  # NODE_OPTIONS="--require $HOME/..." reaches the server mangled: the path is then
+  # taken as a COMMAND and env fails with "Permission denied" (the probe is not
+  # executable — it is meant to be required, not run).
+  $verify = 'timeout 25 env FETCH_CONNECT_TIMEOUT_MS=15000 NODE_OPTIONS=--require=$HOME/.9router/patch-probe.js /opt/pnpm/bin/9router --version --skip-update 2>&1 | tail -1'
   $remoteVer = ssh $target $verify
   if ($LASTEXITCODE -ne 0) {
     Write-Host "  [!!] version check failed or timed out — install itself succeeded; verify manually" -ForegroundColor Yellow
