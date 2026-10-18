@@ -12,6 +12,7 @@ import { buildRequestDetail, extractRequestConfig, extractUsageFromResponse, sav
 import { appendRequestLog, saveRequestDetail } from "@/lib/usageDb.js";
 import { decloakToolNames } from "../../utils/claudeCloaking.js";
 import { restoreToolNames } from "../../utils/opencodeFingerprint.js";
+import { stopReasonFromBody } from "../../utils/stopReason.js";
 import { ROLE, RESPONSES_ITEM } from "../../translator/schema/index.js";
 
 /**
@@ -329,6 +330,10 @@ export async function handleNonStreamingResponse({ providerResponse, provider, m
   reqLogger.logConvertedResponse(translatedResponse);
 
   const totalLatency = Date.now() - requestStartTime;
+  // Termination reason in the client's shape. The choices-only read below covers
+  // OpenAI, but a Claude/Gemini/Responses client gets a body with no `choices` at
+  // all and used to record a literal "unknown".
+  const stopInfo = stopReasonFromBody(translatedResponse);
   saveRequestDetail(buildRequestDetail({
     provider, model, connectionId,
     latency: { ttft: totalLatency, total: totalLatency },
@@ -339,7 +344,8 @@ export async function handleNonStreamingResponse({ providerResponse, provider, m
     response: {
       content: translatedResponse?.choices?.[0]?.message?.content || translatedResponse?.content || null,
       thinking: translatedResponse?.choices?.[0]?.message?.reasoning_content || translatedResponse?.reasoning_content || null,
-      finish_reason: translatedResponse?.choices?.[0]?.finish_reason || "unknown"
+      finish_reason: stopInfo?.reason || "unknown",
+      ...(stopInfo?.native ? { native_finish_reason: stopInfo.native } : {})
     },
     pxpipe,
     status: "success"

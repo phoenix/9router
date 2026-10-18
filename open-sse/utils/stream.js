@@ -3,6 +3,7 @@ import { FORMATS } from "../translator/formats.js";
 import { trackPendingRequest, appendRequestLog } from "@/lib/usageDb.js";
 import { extractUsage, mergeUsage, hasValidUsage, estimateUsage, logUsage, addBufferToUsage, filterUsageForFormat, COLORS } from "./usageTracking.js";
 import { parseSSELine, hasValuableContent, fixInvalidId, formatSSE } from "./streamHelpers.js";
+import { parseFinishReason } from "./stopReason.js";
 import { getOpenAIResponsesEventName, isOpenAIResponsesTerminalEvent, formatIncompleteOpenAIResponsesStreamFailure } from "./responsesStreamHelpers.js";
 import { dbg, isDebugEnabled } from "./debugLog.js";
 
@@ -78,6 +79,18 @@ export function createSSEStream(options = {}) {
   let accumulatedContent = "";
   let accumulatedThinking = "";
   let ttftAt = null;
+  // Termination reason observed on the upstream wire. The request-details drawer
+  // shows it, and the streaming path otherwise had no way to record one: it is
+  // only visible in the native chunks we parse here, not in the client's copy.
+  let stopReason = null;
+  let nativeStopReason = null;
+  const recordStopReason = (chunk) => {
+    const info = parseFinishReason(chunk);
+    if (info) {
+      stopReason = info.reason;
+      if (info.native) nativeStopReason = info.native;
+    }
+  };
   let sseLineCount = 0;
   let sseEmittedCount = 0;
   const eventTypeCounts = {};
@@ -114,7 +127,9 @@ export function createSSEStream(options = {}) {
     if (onStreamComplete) {
       onStreamComplete({
         content: accumulatedContent,
-        thinking: accumulatedThinking
+        thinking: accumulatedThinking,
+        finishReason: stopReason,
+        nativeFinishReason: nativeStopReason || null
       }, finalUsage, ttftAt);
     }
   };
@@ -167,6 +182,8 @@ export function createSSEStream(options = {}) {
           if (trimmed.startsWith("data:") && trimmed.slice(5).trim() !== "[DONE]") {
             try {
               const parsed = JSON.parse(trimmed.slice(5).trim());
+
+              recordStopReason(parsed);
 
               const idFixed = fixInvalidId(parsed);
 
@@ -272,6 +289,8 @@ export function createSSEStream(options = {}) {
 
         const parsed = parseSSELine(trimmed, targetFormat);
         if (!parsed) continue;
+
+        recordStopReason(parsed);
 
         // Responses API same-format passthrough: preserve event framing + track terminal state
         const isOpenAIResponsesStream = targetFormat === FORMATS.OPENAI_RESPONSES;
@@ -466,6 +485,7 @@ export function createSSEStream(options = {}) {
           // counts — so it has to go through.
           const isDoneSentinel = parsed?.done && targetFormat !== FORMATS.OLLAMA;
           if (parsed && !isDoneSentinel) {
+            recordStopReason(parsed);
             // Same accumulation the transform loop does, so finalizeStream() can
             // log a tail chunk's tokens instead of falling back to null.
             const extracted = extractUsage(parsed);

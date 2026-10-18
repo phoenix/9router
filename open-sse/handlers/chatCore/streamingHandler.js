@@ -127,6 +127,12 @@ export function buildOnStreamComplete({ provider, model, connectionId, apiKey, r
     };
     const safeContent = contentObj?.content || "[Empty streaming response]";
     const safeThinking = contentObj?.thinking || null;
+    // Termination reason captured off the upstream wire by the transform stream.
+    // The placeholder row written in handleStreamingResponse has none, and the
+    // drawer's "Stop Reason" field reads response.finish_reason (the same field
+    // the non-streaming path already stores).
+    const finishReason = contentObj?.finishReason || null;
+    const nativeFinishReason = contentObj?.nativeFinishReason || null;
 
     saveRequestDetail(buildRequestDetail({
       provider, model, connectionId,
@@ -135,7 +141,13 @@ export function buildOnStreamComplete({ provider, model, connectionId, apiKey, r
       request: extractRequestConfig(body, stream),
       providerRequest: finalBody || translatedBody || null,
       providerResponse: safeContent,
-      response: { content: safeContent, thinking: safeThinking, type: "streaming" },
+      response: {
+        content: safeContent,
+        thinking: safeThinking,
+        type: "streaming",
+        ...(finishReason ? { finish_reason: finishReason } : {}),
+        ...(nativeFinishReason ? { native_finish_reason: nativeFinishReason } : {})
+      },
       pxpipe,
       status: "success"
     }, { id: streamDetailId })).catch(err => {
