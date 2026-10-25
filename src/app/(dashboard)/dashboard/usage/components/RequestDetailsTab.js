@@ -144,6 +144,47 @@ function formatEstCost(cost, exchangeRate) {
   });
 }
 
+/**
+ * Human label for a normalized stop reason. Rows written before this field
+ * existed have no reason at all — render an em dash rather than a blank cell.
+ */
+const STOP_REASON_LABELS = {
+  stop: "stop",
+  length: "length",
+  tool_calls: "tool_calls",
+  content_filter: "content_filter",
+};
+
+function getStopReason(detail) {
+  const reason = detail?.response?.finish_reason;
+  return typeof reason === "string" && reason.length > 0 ? reason : null;
+}
+
+/**
+ * The upstream's own vocabulary, shown next to the normalized reason when it
+ * differs (Claude `end_turn`, Gemini `STOP`, …) so the value stays debuggable.
+ */
+function getNativeStopReason(detail) {
+  const native = detail?.response?.native_finish_reason;
+  return typeof native === "string" && native.length > 0 ? native : null;
+}
+
+function formatStopReason(detail) {
+  const reason = getStopReason(detail);
+  if (!reason) return "—";
+  const label = STOP_REASON_LABELS[reason] || reason;
+  const native = getNativeStopReason(detail);
+  return native && native !== reason ? `${label} (${native})` : label;
+}
+
+/** Content-filter and truncation are abnormal endings; color them accordingly. */
+function getStopReasonTone(reason) {
+  if (reason === "stop" || reason === "tool_calls") return "text-text-main";
+  if (reason === "length") return "text-amber-600";
+  if (reason === "content_filter") return "text-red-600";
+  return "text-text-main";
+}
+
 export default function RequestDetailsTab({ exchangeRate }) {
   const [details, setDetails] = useState([]);
   const [pagination, setPagination] = useState({
@@ -424,6 +465,12 @@ export default function RequestDetailsTab({ exchangeRate }) {
                   selectedDetail.status === "success" ? "text-green-600" : "text-red-600"
                 )}>
                   {selectedDetail.status}
+                </span>
+              </div>
+              <div>
+                <span className="text-text-muted">Stop Reason:</span>{" "}
+                <span className={cn("font-mono", getStopReasonTone(getStopReason(selectedDetail)))}>
+                  {formatStopReason(selectedDetail)}
                 </span>
               </div>
               <div>

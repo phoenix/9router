@@ -1,4 +1,6 @@
 allowBuilds:
   better-sqlite3: true
-  sharp: set this to true or false
-  unrs-resolver: set this to true or false
+  # sharp / unrs-resolver ship prebuilt platform binaries via optionalDependencies —
+  # no install script needed, so explicitly disallow rather than leave a placeholder.
+  sharp: false
+  unrs-resolver: false

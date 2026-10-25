@@ -3,33 +3,19 @@
  */
 
 import { checkFallbackError, formatRetryAfter } from "./accountFallback.js";
+import { peekSseEmptySeat } from "./comboSsePeek.js";
 import { FALLBACK_SCOPE } from "../config/errorConfig.js";
 import { unavailableResponse } from "../utils/error.js";
 import { getCapabilitiesForModel } from "../providers/capabilities.js";
 import { parseModel } from "./model.js";
 import { extractTextContent } from "../translator/formats/gemini.js";
-import { peekStreamForContent, reconstructStream, isNoRetryFinish } from "./emptyFailover.js";
+import { isNoRetryFinish } from "./emptyFailover.js";
 import {
   getStickyComboModel,
   setStickyComboModel,
   clearStickyComboSession,
   orderModelsByChoice,
 } from "./systemoneRouter.js";
-
-// Peek a 2xx combo response for real content. Returns null for non-SSE responses (leave
-// them untouched). For SSE, returns { outcome: "content"|"empty", finishReason, response }
-// where `response` is a faithful replay of the original stream (head buffer + live reader).
-async function peekComboResponse(result, log) {
-  const ct = (result.headers.get("content-type") || "").toLowerCase();
-  if (!result.body || !ct.includes("text/event-stream")) return null;
-  const peeked = await peekStreamForContent(result.body);
-  const response = new Response(reconstructStream(peeked.head, peeked.reader, peeked.pendingRead), {
-    status: result.status,
-    statusText: result.statusText,
-    headers: result.headers,
-  });
-  return { outcome: peeked.outcome, finishReason: peeked.finishReason, timedOut: peeked.timedOut, response };
-}
 
 // Hard capabilities = input modalities; missing one drops request data (e.g. image
 // stripped). Must be prioritized. Soft (e.g. search) only degrades a feature.
@@ -296,8 +282,12 @@ export function getComboModelsFromData(modelStr, combosData) {
 
 /**
  * Detect whether a 2xx JSON response contains zero usable content
- * (e.g. empty assistant message with in_progress/incomplete)
- * so combo fallback can continue to the next model.
+ * (empty assistant answer) so combo fallback can continue to the next model.
+ * Strong signals only: answer text or tool calls. finish_reason and
+ * reasoning_content are NOT evidence of an answer — a model that terminates
+ * "normally" with an empty content field, or dumps the whole reply into its
+ * reasoning field, is still a dead seat (symptom: [No content] rows that the
+ * dashboard records as a success).
  */
 export function isZeroContentResponse(data) {
   if (!data || typeof data !== "object") return false;
@@ -312,23 +302,13 @@ export function isZeroContentResponse(data) {
     const content = msg?.content;
     const hasContent = typeof content === "string" ? content.trim().length > 0 : (Array.isArray(content) && content.length > 0);
     const hasToolCalls = (Array.isArray(msg?.tool_calls) && msg.tool_calls.length > 0) || Boolean(msg?.function_call);
-    const hasReasoning = typeof msg?.reasoning_content === "string" ? msg.reasoning_content.trim().length > 0 : false;
-
-    const finish = choice.finish_reason;
-    const isNormalFinish = finish === "stop" || finish === "length" || finish === "tool_calls" || finish === "function_call";
-
-    if (!hasContent && !hasToolCalls && !hasReasoning && (!isNormalFinish || finish === "in_progress" || finish === "incomplete")) {
-      return true;
-    }
+    if (!hasContent && !hasToolCalls) return true;
   }
 
   // Anthropic messages format
   if (Array.isArray(data.content)) {
     const hasContent = data.content.some((c) => (c.type === "text" && c.text?.trim().length > 0) || c.type === "tool_use");
-    const stopReason = data.stop_reason;
-    if (!hasContent && (!stopReason || stopReason === "in_progress" || stopReason === "incomplete")) {
-      return true;
-    }
+    if (!hasContent) return true;
   }
 
   return false;
@@ -350,6 +330,12 @@ export function isZeroContentResponse(data) {
  * @param {boolean} [options.sessionSticky=true] - Keep chosen model across session requests to retain prompt cache
  * @param {number} [options.confidenceThreshold=0.8] - Minimum confidence required for model switch (0-1)
  * @param {Function|null} [options.resolveSmartChoice=null] - Smart router resolver callback: (body, models) => Promise<{ choice, probabilities, confidence } | null>
+ * @param {number} [options.comboSsePeekTimeoutMs] - SSE empty-stream peek window override (ms)
+ * @param {Function} [options.onSeatEmpty] - (seatResponse, modelStr, reason) => void|Promise, invoked
+ *   ONCE per PROVEN-DEAD seat (JSON zero-content, or SSE done-no-content / thought-only /
+ *   error-frame) so the caller can feed the account cooldown machinery (OUT 0 = failure).
+ *   NEVER invoked for a released silent last seat ("timeout-released") — silence is
+ *   suspicion, not proof, and locking a slow-thinking model would be a false strike.
  * @returns {Promise<Response>}
  */
 export async function handleComboChat({
@@ -366,6 +352,8 @@ export async function handleComboChat({
   sessionSticky = true,
   confidenceThreshold = 0.8,
   resolveSmartChoice = null,
+  comboSsePeekTimeoutMs,
+  onSeatEmpty,
 }) {
   let rotatedModels = models;
   let activeStickyModel = null;
@@ -474,80 +462,97 @@ export async function handleComboChat({
     log.info("COMBO", `Trying model ${i + 1}/${rotatedModels.length}: ${modelStr}`);
 
     try {
-      const result = await handleSingleModel(body, modelStr);
+      let result = await handleSingleModel(body, modelStr);
       
-      // Success (2xx). A 2xx is necessary but NOT sufficient: Gemini aborts (e.g.
-      // MALFORMED_FUNCTION_CALL) still return 200 and stream empty content, which would
-      // otherwise be delivered as a successful empty answer with no failover.
-      // Peek the stream for real content before committing to this candidate.
+      // Success (2xx) - return response unless empty/zero-content. Every seat is
+      // inspected, including the last: a proven-dead empty 200 must not be
+      // surfaced as a fake success (single-model combos and round-robin land
+      // here constantly — there is simply no next model to fall back to).
       if (result.ok) {
-        let peeked = null;
-        try {
-          peeked = await peekComboResponse(result, log);
-        } catch (peekErr) {
-          // peekStreamForContent is written not to throw; if reconstruction/Response
-          // construction ever does, result.body is already locked by getReader() and can no
-          // longer be streamed. Returning `result` would hand the client a locked, unreadable
-          // body. Degrade to a clean, valid (empty) SSE stream instead.
-          log.warn("COMBO", `empty-peek error on ${modelStr}, returning empty SSE: ${peekErr?.message || peekErr}`);
-          return new Response("data: [DONE]\n\n", {
-            status: 200,
-            headers: { "Content-Type": "text/event-stream" },
-          });
-        }
-
-        if (!peeked) {
-          // Non-streaming (or non-SSE) response — not this peek's job. The zero-content
-          // JSON check still applies on a non-final seat.
-          const isLastModel = i === rotatedModels.length - 1;
-          if (!isLastModel) {
-            const contentType = result.headers?.get?.("content-type") || "";
-            if (contentType.includes("application/json")) {
-              try {
-                const peekBody = await result.clone().json();
-                if (isZeroContentResponse(peekBody)) {
-                  log.warn("COMBO", `Model ${modelStr} returned HTTP 200 with zero usable content, falling back to next model`);
-                  if (comboStrategy === "smart" && sessionId && modelStr === activeStickyModel) {
-                    clearStickyComboSession(comboName, sessionId);
-                  }
-                  lastError = "Zero usable content";
-                  lastStatus = 200;
-                  continue;
-                }
-              } catch {
-                // Ignore JSON parse errors
+        const isLastModel = i === rotatedModels.length - 1;
+        const contentType = result.headers?.get?.("content-type") || "";
+        if (contentType.includes("application/json")) {
+          try {
+            const peekBody = await result.clone().json();
+            if (isZeroContentResponse(peekBody)) {
+              // JSON body is already complete — judging it costs nothing, so the
+              // last seat gets no leniency here either: proven dead = honest 502.
+              if (isLastModel) {
+                log.warn("COMBO", `Model ${modelStr} returned HTTP 200 with zero usable content, no seat left to fall back to`);
+                return new Response(
+                  JSON.stringify({ error: { message: `Upstream model ${modelStr} returned an empty response (done-no-content)`, combo: comboName || null } }),
+                  { status: 502, headers: { "Content-Type": "application/json" } }
+                );
               }
+              log.warn("COMBO", `Model ${modelStr} returned HTTP 200 with zero usable content, falling back to next model`);
+              if (comboStrategy === "smart" && sessionId && modelStr === activeStickyModel) {
+                clearStickyComboSession(comboName, sessionId);
+              }
+              lastError = "Zero usable content";
+              lastStatus = 200;
+              try { await onSeatEmpty?.(result, modelStr, "done-no-content"); } catch { /* hook must never break the fallthrough */ }
+              continue;
             }
+          } catch {
+            // Ignore JSON parse errors
           }
-
-          log.info("COMBO", `Model ${modelStr} succeeded`);
-          return result;
+        } else if (contentType.includes("text/event-stream")) {
+          // An SSE seat cannot be inspected without draining bytes, so peek a
+          // tee'd branch: content/tool-call/reasoning in the first frames (or
+          // a client-received first byte within the window) returns the seat
+          // byte-for-byte unchanged; a silent/zero-delta/error-frame stream
+          // falls through to the next model instead of surfacing a fake
+          // "succeeded" empty 200 ( symptom: 📊 DONE with IN 0 · OUT 0).
+          // Binary/NDJSON upstreams never reach here (content-type gate).
+          const peek = await peekSseEmptySeat(result, { timeoutMs: comboSsePeekTimeoutMs, releaseOnTimeout: isLastModel });
+          if (peek.empty) {
+            // Last seat, silence only (slow prefill may still be thinking):
+            // no proof of emptiness — release the stream and keep the original
+            // behavior instead of trading a fake success for a fake failure.
+            if (peek.reason === "timeout-released") {
+              log.info("COMBO", `Model ${modelStr} silent within peek window, releasing stream as-is (last seat)`);
+              return peek.response;
+            }
+            // A filtered / legitimately-empty answer is a NO-RETRY class
+            // (content_filter & co): surface it byte-for-byte — the next member
+            // would face the same filter (upstream ca7b5401 semantics).
+            if (isNoRetryFinish(peek.finishReason)) {
+              log.warn("COMBO", `Model ${modelStr} returned a no-retry empty (${peek.finishReason}), returning as-is`);
+              return peek.response;
+            }
+            if (isLastModel) {
+              // Last seat, PROVEN dead (terminated with no answer content, or
+              // an upstream error frame). Nothing to fall back to: fail honestly
+              // so clients can retry and usage records show the truth.
+              log.warn("COMBO", `Model ${modelStr} returned HTTP 200 with an empty SSE stream (${peek.reason}), no seat left to fall back to`);
+              try { await onSeatEmpty?.(result, modelStr, peek.reason); } catch { /* hook must never break the 502 */ }
+              return new Response(
+                JSON.stringify({ error: { message: `Upstream model ${modelStr} returned an empty response (${peek.reason})`, combo: comboName || null } }),
+                { status: 502, headers: { "Content-Type": "application/json" } }
+              );
+            }
+            log.warn("COMBO", `Model ${modelStr} returned HTTP 200 with an empty SSE stream (${peek.reason}), falling back to next model`);
+            lastError = `Empty SSE stream (${peek.reason})`;
+            lastStatus = 200;
+            if (comboStrategy === "smart" && sessionId && modelStr === activeStickyModel) {
+              clearStickyComboSession(comboName, sessionId);
+            }
+            // The kept tee branch holds the full original bytes — release it so
+            // the discarded seat's usage logging still runs.
+            peek.response?.body?.cancel?.().catch(() => {});
+            // Lock only on PROOF of death. A silent window (timeout-no-data) may
+            // just be a slow prefill — same rationale as releasing the silent
+            // last seat — so it falls through without striking the model.
+            if (peek.reason !== "timeout-no-data") {
+              try { await onSeatEmpty?.(result, modelStr, peek.reason); } catch { /* hook must never break the fallthrough */ }
+            }
+            continue;
+          }
+          result = peek.response; // client-side tee branch — bytes and order preserved
         }
 
-        if (peeked.outcome === "content") {
-          log.info("COMBO", `Model ${modelStr} succeeded${peeked.timedOut ? " (peek deadline; committed)" : ""}`);
-          return peeked.response;
-        }
-
-        // Empty generation. Fall through to the next candidate unless this is a legitimately
-        // empty class (content filter) or the last candidate — in which case return the
-        // (empty) response as-is, preserving prior behaviour rather than manufacturing a 5xx.
-        const reasonLabel = peeked.finishReason || "no-content";
-        const isLast = i === rotatedModels.length - 1;
-        if (isNoRetryFinish(peeked.finishReason) || isLast) {
-          log.warn("COMBO", `Model ${modelStr} returned empty (${reasonLabel}) — ${isNoRetryFinish(peeked.finishReason) ? "no-retry class" : "last candidate"}, returning as-is`);
-          return peeked.response;
-        }
-
-        log.warn("COMBO", `Model ${modelStr} returned empty (${reasonLabel}) — falling through to next candidate`);
-        if (comboStrategy === "smart" && sessionId && modelStr === activeStickyModel) {
-          clearStickyComboSession(comboName, sessionId);
-        }
-        // Drain/close the discarded stream in the background so its usage logging still runs.
-        peeked.response.body?.cancel?.().catch(() => {});
-        lastError = `empty generation (${reasonLabel})`;
-        if (!lastStatus) lastStatus = 502;
-        continue;
+        log.info("COMBO", `Model ${modelStr} succeeded`);
+        return result;
       }
 
       // If the model that failed was the session-sticky model, clear it so next turns re-evaluate
@@ -645,7 +650,9 @@ export async function handleComboChat({
   // the request itself is invalid, but here the providers are simply unavailable
   // or have no active credentials. 503 is more accurate and retryable by clients.
   const allDisabled = lastError && lastError.toLowerCase().includes("no credentials");
-  const status = allDisabled ? 503 : (lastStatus || 503);
+  // lastStatus 200 means we exhausted seats on empty-content responses, not a
+  // real upstream status — answer 502 so the failure is honest and retryable.
+  const status = allDisabled ? 503 : (lastStatus === 200 ? 502 : (lastStatus || 503));
   const msg = lastError || "All combo models unavailable";
 
   if (earliestRetryAfter) {

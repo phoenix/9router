@@ -162,8 +162,10 @@ describe("OpenCode free reasoning aliases reach OpenAI-shaped clients", () => {
     expect(first.reasoning).toBe("17*23 = 391");
     expect(out.map((e) => e.choices[0].delta.content || "").join("")).toBe("391");
     // Usage/thinking accounting reads reasoning_content, so the dashboard would
-    // have recorded no thinking for this lane before the lift.
-    expect(settled).toEqual({ content: "391", thinking: "17*23 = 391" });
+    // have recorded no thinking for this lane before the lift. finishReason /
+    // nativeFinishReason are the Stop Reason observability fields (usage UI);
+    // this fixture never sends a finish frame, so both stay null.
+    expect(settled).toEqual({ content: "391", thinking: "17*23 = 391", finishReason: null, nativeFinishReason: null });
   });
 
   it("leaves other providers' deltas alone", async () => {

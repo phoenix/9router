@@ -335,7 +335,7 @@ describe("combo fall-through per client format (real combo.js + streaming pipeli
         expect(tried).toEqual(["openai/m0", "openai/m1"]);
         expect(out).toContain("from-m1");
       });
-      it("all members empty → every member is tried, the last one is returned as-is", async () => {
+      it("all members empty → every member is tried, no fake empty success is returned", async () => {
         const { out, tried } = await combo([[ROLE, STOP, DONE], [ROLE, STOP, DONE]], fmt);
         expect(tried).toEqual(["openai/m0", "openai/m1"]);
         expect(out).not.toContain("from-m");

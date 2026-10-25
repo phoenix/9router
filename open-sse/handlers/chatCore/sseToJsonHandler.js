@@ -7,6 +7,7 @@ import { FORMATS } from "../../translator/formats.js";
 import { openAICompletionToClaudeMessage } from "../../translator/concerns/claudeMessage.js";
 import { PROVIDERS } from "../../config/providers.js";
 import { buildRequestDetail, extractRequestConfig, saveUsageStats, formatDoneLine } from "./requestDetail.js";
+import { stopReasonFromBody } from "../../utils/stopReason.js";
 import { ROLE, RESPONSES_ITEM } from "../../translator/schema/index.js";
 import { extractReasoningText } from "../../translator/concerns/reasoning.js";
 
@@ -245,11 +246,24 @@ export async function handleForcedSSEToJson({ providerResponse, sourceFormat, ta
         + (usage.cache_creation_input_tokens || 0);
       const { msgItem, textContent } = pickAssistantMessageForChatCompletion(jsonResponse.output);
 
+      // Termination reason. The Responses body carries status +
+      // incomplete_details.reason rather than a finish_reason, so record the
+      // normalized reason instead of the raw status string ("completed" is not a
+      // stop reason, and "incomplete" hides why the turn was cut).
+      const responsesStop = stopReasonFromBody(jsonResponse);
+      const hasFunctionCalls = (jsonResponse.output || []).some((item) => item?.type === "function_call");
+      const stopReason = hasFunctionCalls ? "tool_calls" : (responsesStop?.reason || "unknown");
+
       saveRequestDetail(buildRequestDetail({
         ...ctx,
         latency: resolveLatency({ requestStartTime, ttft: measuredTtft, now }),
         tokens: { prompt_tokens: inTokensForLog, completion_tokens: usage.output_tokens || 0 },
-        response: { content: textContent, thinking: null, finish_reason: jsonResponse.status || "unknown" },
+        response: {
+          content: textContent,
+          thinking: null,
+          finish_reason: stopReason,
+          ...(responsesStop?.native ? { native_finish_reason: responsesStop.native } : {})
+        },
         status: "success"
       }, { endpoint: clientRawRequest?.endpoint || null })).catch(() => {});
 
