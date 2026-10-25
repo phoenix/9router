@@ -335,7 +335,7 @@ export default function RequestDetailsTab({ exchangeRate }) {
 
       <Card padding="none">
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[960px]">
+          <table className="w-full min-w-[1160px]">
             <thead>
               <tr className="border-b border-black/5 dark:border-white/5">
                 <th className="text-left p-4 text-sm font-semibold text-text-main">Timestamp</th>
@@ -346,6 +346,7 @@ export default function RequestDetailsTab({ exchangeRate }) {
                 <th className="text-right p-4 text-sm font-semibold text-text-main">Output Tokens</th>
                 <th className="text-left p-4 text-sm font-semibold text-text-main">Latency</th>
                 <th className="text-right p-4 text-sm font-semibold text-text-main">Speed</th>
+                <th className="text-right p-4 text-sm font-semibold text-text-main">Stop Reason</th>
                 <th className="text-right p-4 text-sm font-semibold text-text-main">Est. Cost</th>
                 <th className="text-center p-4 text-sm font-semibold text-text-main">Action</th>
               </tr>
@@ -353,7 +354,7 @@ export default function RequestDetailsTab({ exchangeRate }) {
             <tbody>
               {loading ? (
                 <tr>
-                  <td colSpan="10" className="p-8 text-center text-text-muted">
+                  <td colSpan="11" className="p-8 text-center text-text-muted">
                     <div className="flex items-center justify-center gap-2">
                       <span className="material-symbols-outlined animate-spin text-[20px]">progress_activity</span>
                       Loading...
@@ -362,7 +363,7 @@ export default function RequestDetailsTab({ exchangeRate }) {
                 </tr>
               ) : details.length === 0 ? (
                 <tr>
-                  <td colSpan="10" className="p-8 text-center text-text-muted">
+                  <td colSpan="11" className="p-8 text-center text-text-muted">
                     No request details found
                   </td>
                 </tr>
@@ -400,6 +401,9 @@ export default function RequestDetailsTab({ exchangeRate }) {
                     </td>
                     <td className="p-4 text-sm text-text-main text-right font-mono whitespace-nowrap">
                       {formatTokensPerSecond(getTokensPerSecond(detail.tokens, detail.latency))}
+                    </td>
+                    <td className={cn("p-4 text-sm text-right font-mono whitespace-nowrap", getStopReasonTone(getStopReason(detail)))}>
+                      {formatStopReason(detail)}
                     </td>
                     <td className="p-4 text-sm text-text-main text-right font-mono whitespace-nowrap">
                       {formatEstCost(detail.cost, exchangeRate)}
