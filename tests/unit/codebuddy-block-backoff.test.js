@@ -44,13 +44,14 @@ describe("CodeBuddy Intl block backoff (#5024)", () => {
   });
 
   it.each(["openai", "codebuddy-cn", null])("keeps the same text request-scoped for provider %s", (provider) => {
+    // #5057 起未命中规则的 4xx 额外带 requestScoped 标记（combo 靠它前进到下一成员）
     expect(checkFallbackError(400, "request illegal", 0, provider))
-      .toEqual({ shouldFallback: false, cooldownMs: 0 });
+      .toEqual({ shouldFallback: false, cooldownMs: 0, requestScoped: true });
   });
 
   it("does not classify every 11128 code as a block", () => {
     expect(checkFallbackError(400, { code: 11128, msg: "first message is not system prompt" }, 0, "codebuddy-intl"))
-      .toEqual({ shouldFallback: false, cooldownMs: 0 });
+      .toEqual({ shouldFallback: false, cooldownMs: 0, requestScoped: true });
   });
 
   it("persists the account cooldown and incremented backoff level through the cbai alias", async () => {
@@ -82,7 +83,9 @@ describe("CodeBuddy Intl block backoff (#5024)", () => {
     ]);
   });
 
-  it("still stops a combo on a malformed CodeBuddy request", async () => {
+  it("advances past a malformed CodeBuddy request and hands back the first rejection", async () => {
+    // #5057 语义：request-scoped 4xx 不终止 combo（换成员可能通过别的校验）；
+    // 全体拒绝时回吐第一个成员的真实响应，且不冷却账号。
     const error = Response.json({ error: { message: "first message is not system prompt" } }, { status: 400 });
     const dispatch = vi.fn().mockResolvedValue(error);
     const result = await handleComboChat({
@@ -91,7 +94,7 @@ describe("CodeBuddy Intl block backoff (#5024)", () => {
       comboName: "malformed-combo", comboStrategy: "fallback",
     });
     expect(result).toBe(error);
-    expect(dispatch).toHaveBeenCalledTimes(1);
+    expect(dispatch.mock.calls.map(([, model]) => model)).toEqual(["cbai/test-model", "openai/backup-model"]);
     expect(db.updateProviderConnection).not.toHaveBeenCalled();
   });
 });
