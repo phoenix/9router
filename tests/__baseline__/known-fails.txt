@@ -1,5 +1,5 @@
-# Failures that remain on master (triaged 2026-10-21 against v0.5.104). Grouped by cause;
-# remove an entry as soon as its test passes.
+# Failures that remain on master (triaged 2026-10-25 against v0.5.109, after the upstream
+# merge; earlier groups kept as-is). Grouped by cause; remove an entry as soon as its test passes.
 
 # Catalogued before the June translator refactor (9532ec80); expected behavior not
 # re-established from current code, needs the maintainer.
@@ -35,3 +35,24 @@ tests/unit/mimo-free.live.test.js :: MiMo Free anti-abuse gate (live) chat WITH 
 # which is not part of this repository.
 tests/unit/db-benchmark.test.js :: <suite failed to load>
 tests/unit/embeddings.cloud.test.js :: <suite failed to load>
+
+# ---- 以下为 2026-10-25 合并上游 v0.5.109 后新增/定性 ----
+
+# 上游自带红（已用纯上游 worktree @ f39d8f07 实证同样红，2026-10-25）：
+# #2132 的跳过逻辑在上游 headroom 重构后回退，tool/reasoning 历史仍被发去 /v1/compress。
+tests/unit/headroom-responses-format.test.js :: compressWithHeadroom openai-responses format (#1998) skips Responses tool/reasoning history instead of collapsing it into a message (#2132)
+
+# Windows 清理期 EPERM（环境红，非行为回归；断言全过或仅清理报错，间歇复现）：
+# 临时 DATA_DIR 在 SQLite 连接句柄关闭前被 rmSync，Windows 文件锁抛 EPERM；
+# load/杀软时序敏感。上游 Linux CI 不可见（model-routing 等为上游新引入的 tempdir 隔离模式）。
+tests/unit/model-routing.test.js :: model routing keeps built-in provider aliases ahead of compatible node prefixes
+tests/unit/compatible-provider-connections.test.js :: compatible provider connections API creates one API-key connection for an OpenAI-compatible node
+tests/unit/cached-token-e2e.test.js :: <suite-level failed: teardown EPERM>
+tests/unit/db-concurrent.test.js :: <suite-level failed: teardown EPERM>
+tests/unit/db-sqlite-vs-lowdb.test.js :: <suite-level failed: teardown EPERM>
+tests/unit/request-details-tab.test.js :: <suite-level failed: teardown EPERM>
+tests/unit/zed-live-models.test.js :: <suite-level failed: teardown EPERM>
+tests/unit/zed-native-auth.test.js :: <suite-level failed: teardown EPERM>
+
+# 环境依赖红：本机无装 headroom-ai 的解释器，比对两侧同红（合并前后一致）。
+tests/unit/headroom-detect.test.js :: headroom detect prefers the interpreter that actually has headroom-ai installed
