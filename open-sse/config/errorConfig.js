@@ -44,9 +44,10 @@ export const TRANSIENT_COOLDOWN_MS = 30 * 1000;
  * questions must not share one predicate.
  *   - ACCOUNT: "should this credential cool down?" A request-shape 4xx says
  *     nothing about the credential, so the account stays healthy.
- *   - MODEL:   "should the combo try its next model?" A request-shape 4xx will
- *     fail identically on every member, so it is pointless to continue; anything
- *     else (a dead endpoint, a timeout, a conflict) is worth another member.
+ *   - MODEL:   "should the combo try its next model?" Yes for everything except
+ *     nothing: even a request-shape 4xx advances, because members run on
+ *     different providers with different validation (upstream #5057) — and if
+ *     every member rejects, the first member's own response is handed back.
  */
 export const FALLBACK_SCOPE = {
   ACCOUNT: "account",
@@ -55,8 +56,10 @@ export const FALLBACK_SCOPE = {
 
 /**
  * Statuses that are the request's own fault: context overflow, malformed body,
- * unsupported parameter, unprocessable entity. Retrying these on another model
- * wastes a round trip and usually reproduces the same failure.
+ * unsupported parameter, unprocessable entity. These never cool a credential
+ * down. In the combo scope they are flagged requestScoped and the next member is
+ * still tried — a later member on another provider may accept the same body —
+ * while the first rejection is preserved and returned when none can serve it.
  */
 export const REQUEST_SCOPED_STATUSES = [400, 422];
 
@@ -92,12 +95,17 @@ const COOLDOWN = {
 export const ERROR_RULES = [
   // --- Text-based rules (checked first, order = priority) ---
   { provider: "codex", text: "model is not supported when using codex with a chatgpt account", cooldownMs: MAX_RATE_LIMIT_COOLDOWN_MS },
+  // Intl gateway blocks affect the account/IP, so let the connection back off.
+  { provider: "codebuddy-intl", text: "request illegal", backoff: true },
+  { provider: "codebuddy-intl", text: "conversation id missing", backoff: true },
   { text: "no credentials",           cooldownMs: COOLDOWN.long },
   { text: "request not allowed",      cooldownMs: COOLDOWN.short },
   { text: "improperly formed request", cooldownMs: COOLDOWN.long },
   { text: "rate limit",               backoff: true },
   { text: "too many requests",        backoff: true },
   { text: "quota exceeded",           backoff: true },
+  { text: "insufficient credit",      backoff: true },
+  { text: "credit balance is too low", backoff: true },
   { text: "capacity",                 backoff: true },
   { text: "overloaded",               backoff: true },
 

@@ -28,7 +28,13 @@ export function getQuotaCooldown(backoffLevel = 0) {
  * @param {number} backoffLevel - Current backoff level for exponential backoff
  * @param {string|null} provider - Provider id, for provider-scoped rules
  * @param {string} scope - FALLBACK_SCOPE.ACCOUNT (default) or FALLBACK_SCOPE.MODEL
- * @returns {{ shouldFallback: boolean, cooldownMs: number, newBackoffLevel?: number }}
+ * @returns {{ shouldFallback: boolean, cooldownMs: number, newBackoffLevel?: number, requestScoped?: boolean }}
+ *
+ * `shouldFallback` answers "is the CREDENTIAL at fault?" (account rotation).
+ * `requestScoped` answers "is the REQUEST itself what this member rejected?"
+ * (combo rotation). They are different questions: a context overflow or a
+ * validation 400 means the credential is healthy but this member cannot serve
+ * this request, so combo rotation must still try the next member.
  */
 export function checkFallbackError(status, errorText, backoffLevel = 0, provider = null, scope = FALLBACK_SCOPE.ACCOUNT) {
   const lowerError = errorText
@@ -73,19 +79,23 @@ export function checkFallbackError(status, errorText, backoffLevel = 0, provider
   // caller passes its scope explicitly; ACCOUNT is the default so every existing
   // caller keeps its current behaviour.
   if (scope === FALLBACK_SCOPE.MODEL) {
-    // A combo only wastes a round trip when the request itself is at fault: every
-    // member would reject the same body. Anything else — a dead endpoint, a
-    // timeout, a conflict — is worth another member.
+    // A request-shape rejection (400/422) must not cool any credential down, but
+    // it must not end the combo either: members run on different providers with
+    // different validation, so the next member may well serve this very body
+    // (upstream #5057). Flag it requestScoped so the combo advances and, when
+    // every member rejects, the first member's own response is handed back.
     if (REQUEST_SCOPED_STATUSES.includes(status)) {
-      return { shouldFallback: false, cooldownMs: 0 };
+      return { shouldFallback: false, cooldownMs: 0, requestScoped: true };
     }
+    // Anything else — a dead endpoint (451), a timeout, a conflict — is the
+    // provider's fault and is worth another member as a plain fallback.
     if (MODEL_SCOPED_FALLBACK_STATUSES.includes(status)) {
       return { shouldFallback: true, cooldownMs: TRANSIENT_COOLDOWN_MS };
     }
   }
 
   if (status >= 400 && status < 500 && status !== 401 && status !== 402 && status !== 403 && status !== 429) {
-    return { shouldFallback: false, cooldownMs: 0 };
+    return { shouldFallback: false, cooldownMs: 0, requestScoped: true };
   }
 
   // Default: transient cooldown for any unmatched error

@@ -104,6 +104,7 @@ graphify-out/*
 .start-dev.ps1
 start-dev-silent.cjs
 debug.log
+.scratch/
 
 # Local pnpm artifacts (this repo installs per-package; lockfiles are npm's)
 pnpm-lock.yaml

@@ -67,7 +67,11 @@ describe("handleComboChat — a 451 on one member does not stop the combo", () =
     expect(result.status).toBe(200);
   });
 
-  it("still stops immediately on a request-shape error (every member would reject it)", async () => {
+  it("advances past a request-shape rejection and hands back the first one when every member rejects", async () => {
+    // Upstream #5057 flipped this deliberately: members run on different
+    // providers with different validation, so a 400 from one member does not
+    // prove the next one rejects the same body. When none can serve it, the
+    // FIRST rejection's own response is handed back, not a synthesized envelope.
     const models = ["oc/step-5-preview-free", "oc/mimo-v2.6-flash-free"];
     const tried = [];
     const handleSingleModel = vi.fn(async (body, modelStr) => {
@@ -79,8 +83,11 @@ describe("handleComboChat — a 451 on one member does not stop the combo", () =
 
     const result = await handleComboChat({ body: { messages: [] }, models, handleSingleModel, log: silentLog });
 
-    expect(tried).toEqual([models[0]]);
+    expect(tried).toEqual(models);
     expect(result.status).toBe(400);
+    await expect(result.json()).resolves.toMatchObject({
+      error: { message: "This model's maximum context length is 1048576 tokens" },
+    });
   });
 
   it("returns the last upstream error when every member is 451", async () => {
