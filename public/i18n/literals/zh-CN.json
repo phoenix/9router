@@ -1119,6 +1119,8 @@
   "Stop DNS": "停止 DNS",
   "Stop Headroom": "停止 Headroom",
   "Stop MITM": "停止中间人",
+  "Stop Reason": "结束原因",
+  "Stop Reason:": "结束原因：",
   "Stop Server": "停止服务器",
   "Stopped": "已停止",
   "Strict Proxy": "严格代理",
