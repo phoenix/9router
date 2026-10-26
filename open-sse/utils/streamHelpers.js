@@ -43,8 +43,15 @@ export function hasValuableContent(chunk, format) {
   // OpenAI format
   if (format === FORMATS.OPENAI && chunk.choices?.[0]?.delta) {
     const delta = chunk.choices[0].delta;
+    // Every reasoning carrier counts. A reasoning model streams thinking long before
+    // its answer, and the passthrough path DROPS any frame this rejects — so omitting
+    // the vendor aliases (`reasoning`, `reasoning_details[]`) silently threw the
+    // model's whole thinking away on lanes that use them instead of reasoning_content.
     return delta.content && delta.content !== "" ||
            delta.reasoning_content && delta.reasoning_content !== "" ||
+           delta.reasoning && delta.reasoning !== "" ||
+           Array.isArray(delta.reasoning_details) && delta.reasoning_details.length > 0 ||
+           delta.thinking && delta.thinking !== "" ||
            delta.tool_calls && delta.tool_calls.length > 0 ||
            chunk.choices[0].finish_reason ||
            delta.role;

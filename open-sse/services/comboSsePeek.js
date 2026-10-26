@@ -186,6 +186,26 @@ function judgeFrame(node, key = "", depth = 0) {
   return "unknown";
 }
 
+// True when the buffered text already holds a reasoning/thinking frame — i.e. the
+// upstream is mid-thought, not silent. Used by the peek window: expiry on a stream
+// that is demonstrably thinking must RELEASE the seat; expiry on a stream that only
+// sent role/usage (or nothing) is still a dead seat.
+function sawThoughtFrame(text) {
+  if (!text) return false;
+  for (const event of text.split(/\r?\n\r?\n/)) {
+    for (const line of event.split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (!trimmed.startsWith("data:")) continue;
+      const payload = trimmed.slice(5).trim();
+      if (!payload || payload === SSE_DONE) continue;
+      let obj;
+      try { obj = JSON.parse(payload); } catch { continue; } // partial frame
+      if (judgeFrame(obj) === "thought") return true;
+    }
+  }
+  return false;
+}
+
 // Terminal finish value ("content_filter" & co) from the buffered client-format
 // frames, so the caller can honor the NO-RETRY class: a filtered answer is
 // legitimately empty — surface it byte-for-byte instead of retrying.
@@ -237,18 +257,28 @@ export async function peekSseEmptySeat(response, opts = {}) {
     headers: response.headers
   });
 
-  // Window burned with no frame at all: kill both branches (dead seat) — or,
-  // in last-seat mode, hand the untouched branch back so a slow prefill can
-  // still finish (killing it would trade a fake success for a fake failure).
+  // Window burned. Two very different situations share this timer, and only one
+  // of them is evidence of a dead seat:
+  //   * nothing arrived at all → no proof either way, but nothing to forward
+  //     either; cancel and let the caller fall through (timeout-no-data).
+  //   * bytes ARRIVED but the answer had not started yet → a reasoning model is
+  //     mid-thinking. That is silence-after-data, not death: cancelling it
+  //     truncates the model's own thinking mid-stream and silently swaps models.
+  //     Release the live seat instead, exactly like the last-seat path.
+  const releaseLive = () => {
+    // Keep draining the peek branch in the background: the abandoned read()
+    // resolves once and then the queue refills and backpressures upstream
+    // again — an unowned pump loop is what actually keeps it unblocked.
+    const pump = () => reader.read().then((r) => { if (!r.done) pump(); }).catch(() => {});
+    pump();
+    return { empty: true, reason: "timeout-released", response: rewrap() };
+  };
+
   const timeoutOutcome = () => {
-    if (releaseOnTimeout) {
-      // Keep draining the peek branch in the background: the abandoned read()
-      // resolves once and then the queue refills and backpressures upstream
-      // again — an unowned pump loop is what actually keeps it unblocked.
-      const pump = () => reader.read().then((r) => { if (!r.done) pump(); }).catch(() => {});
-      pump();
-      return { empty: true, reason: "timeout-released", response: rewrap() };
-    }
+    // Release only when the upstream is PROVABLY thinking: a thought frame
+    // arrived. Bare role/usage frames prove nothing and must not buy a silent
+    // seat another 6 minutes of the stall timeout.
+    if (releaseOnTimeout || sawThoughtFrame(buffer)) return releaseLive();
     reader.cancel().catch(() => {});
     // Keep the client tee branch (the full original bytes) so a no-retry class
     // can still be surfaced; the caller drains it when it falls through.

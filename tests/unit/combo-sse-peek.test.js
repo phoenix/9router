@@ -126,6 +126,29 @@ describe("judgeSseFinal", () => {
   });
 });
 
+describe("hasValuableContent — reasoning carriers", () => {
+  // The passthrough stream drops any frame hasValuableContent rejects. A reasoning
+  // model's thinking must survive the trip to the client no matter which alias the
+  // vendor used; dropping alias frames made the client see nothing at all while the
+  // model was thinking.
+  it("keeps every reasoning carrier the translators understand", async () => {
+    const { hasValuableContent } = await import("../../open-sse/utils/streamHelpers.js");
+    const { FORMATS } = await import("../../open-sse/translator/formats.js");
+    const delta = (d) => ({ choices: [{ delta: d }] });
+
+    for (const carrier of [
+      { reasoning_content: "think" },
+      { reasoning: "think" },
+      { reasoning_details: [{ text: "think" }] },
+      { thinking: "think" },
+    ]) {
+      expect(hasValuableContent(delta(carrier), FORMATS.OPENAI), JSON.stringify(carrier)).toBe(true);
+    }
+    // Still dropped: an empty delta carries nothing the client needs.
+    expect(hasValuableContent(delta({}), FORMATS.OPENAI)).toBeFalsy();
+  });
+});
+
 describe("peekSseEmptySeat", () => {
   it("returns the seat untouched when content arrives", async () => {
     const response = sseResponse([{ choices: [{ delta: { content: "hello" } }] }, "data: [DONE]\n\n"]);
@@ -199,6 +222,54 @@ describe("peekSseEmptySeat", () => {
     expect(peek.empty).toBe(true);
     expect(peek.reason).toBe("timeout-no-data");
     expect(Date.now() - started).toBeLessThan(2000);
+  });
+
+  // Reasoning models stream thinking for many seconds before the answer. A window
+  // that expires while bytes are already flowing is SILENCE-AFTER-DATA, not proof
+  // of death (the module's own doctrine: "silence is suspicion, not proof"). It
+  // must release the live seat, never cancel it — cancelling is what truncated
+  // NIM's minimax thinking mid-stream on every combo turn.
+  it("releases a seat whose reasoning arrived but whose answer is slower than the window", async () => {
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode(sse({ choices: [{ delta: { reasoning_content: "thinking..." } }] })));
+        setTimeout(() => {
+          try {
+            controller.enqueue(encoder.encode(sse({ choices: [{ delta: { content: "answer" } }] })));
+            controller.close();
+          } catch { /* already closed */ }
+        }, 400);
+      }
+    });
+    const response = new Response(stream, { status: 200, headers: { "content-type": "text/event-stream" } });
+
+    const peek = await peekSseEmptySeat(response, { timeoutMs: 80 });
+
+    // Released, not abandoned: the caller forwards peek.response instead of failing over.
+    expect(peek.reason).toBe("timeout-released");
+    const text = await peek.response.text();
+    expect(text).toContain("thinking...");
+    expect(text).toContain("answer"); // the tail still reaches the client
+  });
+
+  // The release must be earned by evidence of thinking, not by any byte at all:
+  // a seat that only opened with a role frame and then went silent is still dead,
+  // and must fall through inside the window instead of burning the 6-minute stall.
+  it("still fails over when only a role frame arrived before the window expired", async () => {
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode(sse({ choices: [{ delta: { role: "assistant" } }] })));
+        // then silence forever
+      }
+    });
+    const response = new Response(stream, { status: 200, headers: { "content-type": "text/event-stream" } });
+
+    const peek = await peekSseEmptySeat(response, { timeoutMs: 80 });
+
+    expect(peek.empty).toBe(true);
+    expect(peek.reason).toBe("timeout-no-data");
   });
 
   it("falls back on an upstream error frame", async () => {
