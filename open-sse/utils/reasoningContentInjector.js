@@ -34,11 +34,32 @@ function shouldInject(message, scope) {
   return true;
 }
 
+// Vendor alias carrying the same reasoning text under a different key. When one is
+// present, echo IT back as reasoning_content instead of adding a placeholder next to
+// it: two keys that mean the same field are a duplicate-key 400 on strict serde
+// upstreams (NVIDIA: "duplicate field `reasoning_content`"), and on any provider they
+// would double the replayed reasoning tokens.
+function aliasReasoningText(message) {
+  if (typeof message?.reasoning === "string" && message.reasoning) return message.reasoning;
+  if (Array.isArray(message?.reasoning_details)) {
+    const text = message.reasoning_details
+      .map((d) => (typeof d === "string" ? d : d?.text || d?.content || "")).join("");
+    if (text) return text;
+  }
+  return "";
+}
+
 function applyRule(body, rule) {
   if (!rule || !body?.messages) return body;
-  const messages = body.messages.map(m =>
-    shouldInject(m, rule.scope) ? { ...m, reasoning_content: PLACEHOLDER } : m
-  );
+  const messages = body.messages.map(m => {
+    if (!shouldInject(m, rule.scope)) return m;
+    const alias = aliasReasoningText(m);
+    if (alias) {
+      const { reasoning, reasoning_details, ...rest } = m;
+      return { ...rest, reasoning_content: alias };
+    }
+    return { ...m, reasoning_content: PLACEHOLDER };
+  });
   return { ...body, messages };
 }
 

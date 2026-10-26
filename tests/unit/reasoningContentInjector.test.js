@@ -158,3 +158,49 @@ describe("OpenCodeExecutor — issue #1543 regression", () => {
     expect(assistant.reasoning_content).toBeDefined();
   });
 });
+
+// A vendor alias (`reasoning` / `reasoning_details[]`) already carries the reasoning
+// text. Adding a placeholder reasoning_content next to it would put two keys meaning
+// the same field on the wire — a "duplicate field" 400 on strict serde upstreams
+// (NVIDIA) and doubled reasoning tokens everywhere else. The alias must be promoted,
+// not supplemented.
+describe("injectReasoningContent — alias coexistence (no duplicate key)", () => {
+  const keysOf = (msg) => JSON.stringify(msg).match(/"reasoning/g) || [];
+
+  it("promotes a lone `reasoning` alias instead of adding a placeholder next to it", () => {
+    const out = injectReasoningContent({
+      provider: "deepseek",
+      model: "deepseek-reasoner",
+      body: bodyWith([{ role: "assistant", content: "answer", reasoning: "the chain" }]),
+    });
+    const assistant = out.messages[0];
+    expect(assistant.reasoning_content).toBe("the chain");
+    expect(assistant.reasoning).toBeUndefined();
+    expect(keysOf(assistant)).toHaveLength(1);
+  });
+
+  it("flattens a lone `reasoning_details` alias to reasoning_content", () => {
+    const out = injectReasoningContent({
+      provider: "opencode",
+      model: "deepseek-v4-flash-free",
+      body: bodyWith([{ role: "assistant", content: "answer", reasoning_details: [{ text: "ab" }, { content: "c" }] }]),
+    });
+    const assistant = out.messages[0];
+    expect(assistant.reasoning_content).toBe("abc");
+    expect(assistant.reasoning_details).toBeUndefined();
+    expect(keysOf(assistant)).toHaveLength(1);
+  });
+
+  it("never emits both reasoning_content and reasoning, even under a tool-call scope rule", () => {
+    const out = injectReasoningContent({
+      provider: "kimi",
+      model: "kimi-k2.7-code",
+      body: bodyWith([
+        { role: "assistant", content: "", tool_calls: [{ id: "c1", type: "function", function: { name: "f", arguments: "{}" } }], reasoning: "chain" },
+      ]),
+    });
+    const assistant = out.messages[0];
+    expect(assistant.reasoning_content).toBe("chain");
+    expect(keysOf(assistant)).toHaveLength(1);
+  });
+});
