@@ -20,6 +20,7 @@
 - **Thinking**: keep `reasoning_effort: max` for GPT-5.6 / GPT-6 served through OpenAI Compatible nodes instead of clamping it to `xhigh` (#5186)
 - **Codex Image**: drive the `image_generation` tool call from `gpt-6-sol` instead of the legacy `gpt-5.6-terra` host, and add `cx/gpt-6-sol-image`; drop the `gpt-5.6-{sol,terra,luna}-image` aliases they supersede
 - **Capabilities**: match `*gpt-6*image*` before the generic `gpt-6` family pattern so `gpt-6-sol-image` resolves as an image model instead of inheriting the chat caps (vision/reasoning/1.05M window) and losing `imageOutput`
+- **Runtime deps**: load lazy optional deps (`wreq-js`, `playwright-core`) through `createRequire` instead of a computed `import()`, which Turbopack rewrote into an always-throwing stub — every OpenCode Free / Grok Web / web-provider request failed with `wreq-js unavailable` even when the package was installed. The on-demand installer now runs npm's CLI through the app's own Node binary rather than `npm.cmd`, which needs an absent `cmd.exe` on hardened Windows hosts
 
 # v0.5.109 (2026-10-23)
 
