@@ -334,8 +334,9 @@ export function isZeroContentResponse(data) {
  * @param {Function} [options.onSeatEmpty] - (seatResponse, modelStr, reason) => void|Promise, invoked
  *   ONCE per PROVEN-DEAD seat (JSON zero-content, or SSE done-no-content / thought-only /
  *   error-frame) so the caller can feed the account cooldown machinery (OUT 0 = failure).
- *   NEVER invoked for a released silent last seat ("timeout-released") — silence is
- *   suspicion, not proof, and locking a slow-thinking model would be a false strike.
+ *   NEVER invoked for a RELEASED seat ("timeout-released") — that is either the last
+ *   seat or one caught mid-thinking. Silence is suspicion, not proof, and locking a
+ *   slow-thinking model would be a false strike.
  * @returns {Promise<Response>}
  */
 export async function handleComboChat({
@@ -506,11 +507,14 @@ export async function handleComboChat({
           // Binary/NDJSON upstreams never reach here (content-type gate).
           const peek = await peekSseEmptySeat(result, { timeoutMs: comboSsePeekTimeoutMs, releaseOnTimeout: isLastModel });
           if (peek.empty) {
-            // Last seat, silence only (slow prefill may still be thinking):
-            // no proof of emptiness — release the stream and keep the original
-            // behavior instead of trading a fake success for a fake failure.
+            // Window expired with no proof of death — either the last seat, or a
+            // seat already caught mid-thinking. Forward the live stream rather than
+            // trading a fake success for a fake failure (this is the normal path for
+            // a slow reasoning model, not an error).
             if (peek.reason === "timeout-released") {
-              log.info("COMBO", `Model ${modelStr} silent within peek window, releasing stream as-is (last seat)`);
+              log.info("COMBO", isLastModel
+                ? `Model ${modelStr} still thinking when the peek window closed, forwarding live stream (last seat)`
+                : `Model ${modelStr} still thinking when the peek window closed, forwarding live stream (${rotatedModels.length - i - 1} seat(s) unused)`);
               return peek.response;
             }
             // A filtered / legitimately-empty answer is a NO-RETRY class
@@ -531,8 +535,8 @@ export async function handleComboChat({
                 { status: 502, headers: { "Content-Type": "application/json" } }
               );
             }
-            log.warn("COMBO", `Model ${modelStr} returned HTTP 200 with an empty SSE stream (${peek.reason}), falling back to next model`);
-            lastError = `Empty SSE stream (${peek.reason})`;
+            log.warn("COMBO", `Model ${modelStr} returned HTTP 200 with no usable content (${peek.reason}), falling back to next model`);
+            lastError = `No usable content (${peek.reason})`;
             lastStatus = 200;
             if (comboStrategy === "smart" && sessionId && modelStr === activeStickyModel) {
               clearStickyComboSession(comboName, sessionId);
@@ -540,9 +544,9 @@ export async function handleComboChat({
             // The kept tee branch holds the full original bytes — release it so
             // the discarded seat's usage logging still runs.
             peek.response?.body?.cancel?.().catch(() => {});
-            // Lock only on PROOF of death. A silent window (timeout-no-data) may
-            // just be a slow prefill — same rationale as releasing the silent
-            // last seat — so it falls through without striking the model.
+            // Lock only on PROOF of death. timeout-no-data means "not a single byte
+            // arrived" — that may still just be a slow prefill, so it falls through
+            // without striking the model (same rationale as a released seat).
             if (peek.reason !== "timeout-no-data") {
               try { await onSeatEmpty?.(result, modelStr, peek.reason); } catch { /* hook must never break the fallthrough */ }
             }
