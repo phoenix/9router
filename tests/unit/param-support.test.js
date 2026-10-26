@@ -160,4 +160,86 @@ describe("stripUnsupportedParams", () => {
 
     expect(body).toEqual({ max_tokens: 50 });
   });
+
+  // ── reasoning alias dedupe (NVIDIA NIM strict serde) ────────────────────────
+  // NVIDIA's /v1/chat/completions deserializes the body into a Rust struct where
+  // `reasoning` and `reasoning_content` are serde aliases of the same field, so an
+  // assistant turn carrying both 400s:
+  //   "duplicate field `reasoning_content` at line 1 column 218817"
+  // Clients (Hermes, various agents) replay both keys with identical text. Collapse
+  // them to the canonical reasoning_content before the body goes upstream.
+  const bothKeysBody = () => ({
+    messages: [
+      { role: "user", content: "hi" },
+      {
+        role: "assistant",
+        content: "",
+        tool_calls: [{ id: "call_1", type: "function", function: { name: "ping", arguments: "{}" } }],
+        reasoning_content: "same text",
+        reasoning: "same text",
+        reasoning_details: [{ text: "same text" }],
+      },
+      { role: "tool", tool_call_id: "call_1", content: "pong" },
+    ],
+  });
+
+  it("collapses a duplicated reasoning alias on NVIDIA assistant turns (keeps reasoning_content)", () => {
+    const body = bothKeysBody();
+
+    stripUnsupportedParams("nvidia", "minimaxai/minimax-m3.1-flash", body);
+
+    const assistant = body.messages[1];
+    expect(assistant.reasoning_content).toBe("same text");
+    expect(assistant.reasoning).toBeUndefined();
+    expect(assistant.reasoning_details).toBeUndefined();
+    // Only one reasoning key survives on the wire — that is what stops the 400.
+    expect(JSON.stringify(assistant).match(/"reasoning/g)).toHaveLength(1);
+  });
+
+  it("promotes a lone reasoning alias to reasoning_content on NVIDIA (no thinking lost)", () => {
+    const body = {
+      messages: [{ role: "assistant", content: "answer", reasoning: "the chain" }],
+    };
+
+    stripUnsupportedParams("nvidia", "minimaxai/minimax-m3.1-flash", body);
+
+    expect(body.messages[0].reasoning_content).toBe("the chain");
+    expect(body.messages[0].reasoning).toBeUndefined();
+  });
+
+  it("flattens reasoning_details to reasoning_content on NVIDIA when no other reasoning key exists", () => {
+    const body = {
+      messages: [{ role: "assistant", content: "answer", reasoning_details: [{ text: "ab" }, { content: "c" }] }],
+    };
+
+    stripUnsupportedParams("nvidia", "minimaxai/minimax-m3.1-flash", body);
+
+    expect(body.messages[0].reasoning_content).toBe("abc");
+    expect(body.messages[0].reasoning_details).toBeUndefined();
+  });
+
+  it("leaves user turns and other providers untouched by the NVIDIA alias dedupe", () => {
+    const userBody = { messages: [{ role: "user", content: "hi", reasoning: "x", reasoning_content: "x" }] };
+    stripUnsupportedParams("nvidia", "minimaxai/minimax-m3.1-flash", userBody);
+    expect(userBody.messages[0].reasoning).toBe("x");
+    expect(userBody.messages[0].reasoning_content).toBe("x");
+
+    const otherBody = bothKeysBody();
+    stripUnsupportedParams("deepseek", "deepseek-reasoner", otherBody);
+    expect(otherBody.messages[1].reasoning).toBe("same text");
+  });
+
+  it("DefaultExecutor.transformRequest emits a single reasoning key for NVIDIA", async () => {
+    const { DefaultExecutor } = await import("../../open-sse/executors/default.js");
+    const executor = new DefaultExecutor("nvidia");
+    const out = executor.transformRequest(
+      "minimaxai/minimax-m3.1-flash",
+      bothKeysBody(),
+      true,
+      { apiKey: "x" },
+    );
+    const assistant = out.messages.find((m) => m.role === "assistant");
+    expect(JSON.stringify(assistant).match(/"reasoning/g)).toHaveLength(1);
+    expect(assistant.reasoning_content).toBe("same text");
+  });
 });

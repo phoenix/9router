@@ -42,7 +42,31 @@ const STRIP_RULES = [
   // Current OpenAI models (gpt-5.x / gpt-6.x) reject `max_tokens` with HTTP 400
   // ("Use 'max_completion_tokens' instead"). Clients send `max_tokens`, so rename it.
   { provider: "openai", renameParams: { max_tokens: "max_completion_tokens" } },
+  // NVIDIA NIM deserializes the request into a Rust struct where `reasoning`,
+  // `reasoning_content` and `reasoning_details` are serde aliases of ONE field, so
+  // an assistant turn replaying both keys fails to deserialize:
+  //   "duplicate field `reasoning_content` at line 1 column 218817" (HTTP 400).
+  // Agent clients (Hermes etc.) echo both, with identical text. Collapse them to
+  // the canonical key — keeping reasoning_content (NVIDIA's reasoning models
+  // require the pass-back) and never losing a lone alias.
+  { provider: "nvidia", dedupeReasoningAliases: true },
 ];
+
+// One assistant turn → at most one reasoning key. Prefers reasoning_content, then
+// the `reasoning` alias, then `reasoning_details[]`; drops the aliases NVIDIA's
+// strict serde would collide on. Leaves the turn untouched when it carries none.
+function collapseReasoningAliases(msg) {
+  const canonical = typeof msg.reasoning_content === "string" ? msg.reasoning_content : "";
+  const alias = typeof msg.reasoning === "string" ? msg.reasoning : "";
+  const details = Array.isArray(msg.reasoning_details)
+    ? msg.reasoning_details.map(d => (typeof d === "string" ? d : d?.text || d?.content || "")).join("")
+    : "";
+  const text = canonical || alias || details;
+  if (text) msg.reasoning_content = text;
+  else if ("reasoning_content" in msg) delete msg.reasoning_content;
+  delete msg.reasoning;
+  delete msg.reasoning_details;
+}
 
 // Test a rule's match (regex or predicate) against the model id.
 function matches(rule, model) {
@@ -78,6 +102,13 @@ export function stripUnsupportedParams(provider, model, body) {
         for (const key of rule.dropMessageFields) {
           if (msg[key] !== undefined) delete msg[key];
         }
+      }
+    }
+    // Per-message reasoning alias collapse (assistant turns only — that is where
+    // clients replay reasoning, and where a duplicate key collides upstream).
+    if (rule.dedupeReasoningAliases && Array.isArray(body.messages)) {
+      for (const msg of body.messages) {
+        if (msg && msg.role === "assistant") collapseReasoningAliases(msg);
       }
     }
     // CF Workers AI oneOf root schema only accepts content as plain string (#1926)

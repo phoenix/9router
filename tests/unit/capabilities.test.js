@@ -206,6 +206,17 @@ describe("getCapabilitiesForModel — MiniMax M2.x vision", () => {
     const caps = getCapabilitiesForModel(null, "minimax-m3");
     expect(caps.vision).toBe(true);
   });
+
+  // NVIDIA NIM is OpenAI-compatible and rejects MiniMax's native `thinking` field
+  // (400 "Unsupported parameter(s): thinking", cf. #2268). m3.1-flash is passthrough-
+  // listed by NVIDIA's own /v1/models, so it has no registry entry; without the
+  // provider pin it fell through to the global `*minimax-m3*` pattern → "minimax".
+  it("nvidia minimax-m3.1-flash uses the OpenAI reasoning_effort shape", () => {
+    const caps = getCapabilitiesForModel("nvidia", "minimaxai/minimax-m3.1-flash");
+    expect(caps.thinkingFormat).toBe("openai");
+    expect(caps.reasoning).toBe(true);
+    expect(caps.thinkingCanDisable).toBe(false);
+  });
 });
 
 describe("getCapabilitiesForModel — DeepSeek V4 text-only", () => {

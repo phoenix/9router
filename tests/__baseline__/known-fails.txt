@@ -56,3 +56,8 @@ tests/unit/zed-native-auth.test.js :: <suite-level failed: teardown EPERM>
 
 # 环境依赖红：本机无装 headroom-ai 的解释器，比对两侧同红（合并前后一致）。
 tests/unit/headroom-detect.test.js :: headroom detect prefers the interpreter that actually has headroom-ai installed
+
+# 环境红：xAI endpoint-discovery fetch 不可达时 5s 超时（CLAUDE.md 已登记为常态红；
+# 合并前后差集证实在 pre-merge 基线中也同样红，非本次合并/修复回归）。
+tests/unit/xai-oauth-service.test.js :: xai/oauth service generates dashboard auth data with CLIProxyAPI PKCE size and discovered endpoints
+tests/unit/xai-oauth-service.test.js :: xai/oauth service exchanges dashboard codes against the discovered xAI token endpoint
