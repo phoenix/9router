@@ -82,7 +82,122 @@ describe("opencodeTlsClient", () => {
     const { opencodeTlsFetch } = await import("../../open-sse/services/opencodeTlsClient.js");
     const controller = new AbortController();
     await opencodeTlsFetch("https://opencode.ai/a", {}, { signal: controller.signal });
-
-    expect(fetchMock.mock.calls[0][1].signal).toBe(controller.signal);
+    controller.abort();
+    // 外层取消必须传到 wreq 的请求信号上（与内部空闲看门狗信号合成）
+    expect(fetchMock.mock.calls[0][1].signal.aborted).toBe(true);
   });
+
+  // ↓ 2026-10-27 生产事故回归：mimo-v2.6-flash-free 流式响应在 121388ms 被
+  // "request or response body error: operation timed out" 掐断。根因是 wreq 的
+  // `timeout` 是「请求总时长」硬上限（字节仍在流动也照杀），不是字节空闲超时。
+
+  it("never hands wreq a whole-request deadline — live streams must survive", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response("data: ok\n\n", { status: 200 }));
+    createSessionMock.mockResolvedValue({ fetch: fetchMock, close: vi.fn() });
+
+    const { opencodeTlsFetch } = await import("../../open-sse/services/opencodeTlsClient.js");
+    await opencodeTlsFetch("https://opencode.ai/a", { method: "POST", body: "{}" });
+
+    // 0 = wreq 不设总上限（其契约：0 或正数）；空闲防护由字节级看门狗负责
+    expect(fetchMock.mock.calls[0][1].timeout).toBe(0);
+  });
+
+  it("aborts when the upstream never sends headers (no infinite wait)", async () => {
+    createSessionMock.mockResolvedValue({
+      fetch: vi.fn().mockReturnValue(new Promise(() => {})),
+      close: vi.fn(),
+    });
+
+    const { opencodeTlsFetch } = await import("../../open-sse/services/opencodeTlsClient.js");
+    await expect(
+      opencodeTlsFetch("https://opencode.ai/a", {}, { headersTimeoutMs: 60 })
+    ).rejects.toMatchObject({ name: "StreamIdleTimeoutError" });
+  });
+
+  it("kills a body that never sends its first byte (TTFT budget, not forever)", async () => {
+    const silentBody = new ReadableStream({ start() { /* 永不吐字节 */ } });
+    const fetchMock = vi.fn().mockResolvedValue(new Response(silentBody, { status: 200 }));
+    createSessionMock.mockResolvedValue({ fetch: fetchMock, close: vi.fn() });
+
+    const { opencodeTlsFetch } = await import("../../open-sse/services/opencodeTlsClient.js");
+    const res = await opencodeTlsFetch("https://opencode.ai/a", {}, { ttftTimeoutMs: 60 });
+
+    const reader = res.body.getReader();
+    await expect(reader.read()).rejects.toMatchObject({ name: "StreamIdleTimeoutError" });
+  });
+
+  it("judges a slow first byte by the TTFT budget, not the tight inter-chunk idle", async () => {
+    // 首字节 350ms 才到（合法 prefill），之后永久静默。TTFT 预算必须放行首字节，
+    // 真正的死因只能是后续静默，且不得早于首字节到达。
+    const enc = new TextEncoder();
+    let sent = 0;
+    const body = new ReadableStream({
+      async pull(controller) {
+        if (sent >= 1) return new Promise(() => {}); // 首块之后永久静默
+        await new Promise((r) => setTimeout(r, 350));
+        sent++;
+        controller.enqueue(enc.encode("first\n"));
+      },
+    });
+    const fetchMock = vi.fn().mockResolvedValue(new Response(body, { status: 200 }));
+    createSessionMock.mockResolvedValue({ fetch: fetchMock, close: vi.fn() });
+
+    const { opencodeTlsFetch } = await import("../../open-sse/services/opencodeTlsClient.js");
+    const res = await opencodeTlsFetch("https://opencode.ai/a", {}, { ttftTimeoutMs: 2500, idleTimeoutMs: 120 });
+
+    const reader = res.body.getReader();
+    const t0 = Date.now();
+    const first = await reader.read(); // 首字节 350ms：必须被 TTFT 预算放行
+    expect(first.done).toBe(false);
+    await expect(reader.read()).rejects.toMatchObject({ name: "StreamIdleTimeoutError" });
+    expect(Date.now() - t0).toBeGreaterThanOrEqual(300); // 不能被紧的流动后空闲提前杀
+  });
+
+  it("kills mid-stream silence at the tight inter-chunk idle", async () => {
+    // 两块很快到，之后静默：流动后的空闲判定用小的 idleTimeoutMs，必须 ~百毫秒级断
+    const enc = new TextEncoder();
+    let n = 0;
+    const body = new ReadableStream({
+      async pull(controller) {
+        if (n >= 2) return new Promise(() => {}); // 静默
+        n++;
+        await new Promise((r) => setTimeout(r, 20));
+        controller.enqueue(enc.encode(`chunk ${n}\n`));
+      },
+    });
+    const fetchMock = vi.fn().mockResolvedValue(new Response(body, { status: 200 }));
+    createSessionMock.mockResolvedValue({ fetch: fetchMock, close: vi.fn() });
+
+    const { opencodeTlsFetch } = await import("../../open-sse/services/opencodeTlsClient.js");
+    const res = await opencodeTlsFetch("https://opencode.ai/a", {}, { ttftTimeoutMs: 2500, idleTimeoutMs: 150 });
+
+    const reader = res.body.getReader();
+    await reader.read();
+    await reader.read();
+    await expect(reader.read()).rejects.toMatchObject({ name: "StreamIdleTimeoutError" });
+  });
+
+  it("keeps a slow-but-alive stream flowing (inter-byte idle semantics, not total)", async () => {
+    const enc = new TextEncoder();
+    let n = 0;
+    const body = new ReadableStream({
+      async pull(controller) {
+        if (n >= 8) { controller.close(); return; }
+        await new Promise((resolve) => setTimeout(resolve, 120));
+        n++;
+        controller.enqueue(enc.encode(`chunk ${n}\n`));
+      },
+    });
+    const fetchMock = vi.fn().mockResolvedValue(new Response(body, { status: 200 }));
+    createSessionMock.mockResolvedValue({ fetch: fetchMock, close: vi.fn() });
+
+    const { opencodeTlsFetch } = await import("../../open-sse/services/opencodeTlsClient.js");
+    const res = await opencodeTlsFetch("https://opencode.ai/a", {}, { ttftTimeoutMs: 400, idleTimeoutMs: 400 });
+
+    const chunks = [];
+    for await (const chunk of res.body) chunks.push(chunk);
+    // 总时长 ~960ms > idleTimeoutMs 400ms，但字节间隔 ~120ms < 400ms：
+    // 空闲语义下必须收齐全部 8 块，绝不能像总时长上限那样中途掐断。
+    expect(chunks).toHaveLength(8);
+  }, 10000);
 });

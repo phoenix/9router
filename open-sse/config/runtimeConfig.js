@@ -52,6 +52,15 @@ export const SEARXNG_URL = envUrl("SEARXNG_URL", "http://localhost:8888/search")
 // slow reasoning models aren't aborted mid-stream. Env: STREAM_STALL_TIMEOUT_MS.
 export const STREAM_STALL_TIMEOUT_MS = envMs("STREAM_STALL_TIMEOUT_MS", 360 * 1000);
 
+// Byte-idle timeout for the opencode TLS transport, applied AFTER the first
+// body chunk has arrived (mid-stream). Aligns with the combo fallback
+// philosophy (comboSsePeek "timeout-no-data"): sustained total silence on a
+// live connection means the seat is dead, not slow. Kept above typical SSE
+// keepalive gaps and above the think→answer transition so steady streams are
+// never touched; anything longer is covered by STREAM_STALL_TIMEOUT_MS.
+// Env: STREAM_IDLE_TIMEOUT_MS.
+export const STREAM_IDLE_TIMEOUT_MS = envMs("STREAM_IDLE_TIMEOUT_MS", 30 * 1000);
+
 // Non-final combo seats: how long to peek an upstream SSE stream before judging
 // it empty and falling back to the next model. Judged empty: no bytes, only a
 // terminal marker, or a stream that ends with reasoning but an EMPTY answer
