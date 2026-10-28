@@ -83,7 +83,7 @@ describe("CodeBuddy Intl block backoff (#5024)", () => {
     ]);
   });
 
-  it("advances past a malformed CodeBuddy request and hands back the first rejection", async () => {
+  it("advances past a malformed CodeBuddy request without cooling the account", async () => {
     // #5057 语义：request-scoped 4xx 不终止 combo（换成员可能通过别的校验）；
     // 全体拒绝时回吐第一个成员的真实响应，且不冷却账号。
     const error = Response.json({ error: { message: "first message is not system prompt" } }, { status: 400 });
@@ -93,8 +93,14 @@ describe("CodeBuddy Intl block backoff (#5024)", () => {
       handleSingleModel: dispatch, log: { info: vi.fn(), warn: vi.fn() },
       comboName: "malformed-combo", comboStrategy: "fallback",
     });
+    // A malformed body is request-scoped: it says nothing about the credential,
+    // so the combo tries the next member instead of stopping on the first error.
+    expect(dispatch).toHaveBeenCalledTimes(2);
+    // No member served it, so the first request-scoped failure is handed back —
+    // the caller still sees the member that named the real cause.
     expect(result).toBe(error);
     expect(dispatch.mock.calls.map(([, model]) => model)).toEqual(["cbai/test-model", "openai/backup-model"]);
+    // Crucially, no account cooldown is persisted for a client-side fault.
     expect(db.updateProviderConnection).not.toHaveBeenCalled();
   });
 });
