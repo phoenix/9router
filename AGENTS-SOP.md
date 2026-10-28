@@ -21,9 +21,17 @@
 ```powershell
 # 合并前基线（在合并之前，或事后用 backup 分支建 worktree）
 git worktree add ..\9router-baseline backup/pre-merge-YYYYMMDD
-# ⚠️ worktree 的 tests 依赖必须重装：cd tests && pnpm install --ignore-workspace
+# ⚠️ worktree 的 tests 依赖必须重装，且**只能**在 tests 子目录里装：
+cd tests && pnpm install --ignore-workspace
 #   - robocopy 复制 node_modules 会把 pnpm junction 指向原仓库，全断
-#   - 根目录 pnpm install 会把 tests 吸进 workspace，vitest 装不进 tests/
+# 🚨 红线：绝不在 worktree 根目录跑 pnpm install！那会从零物化整棵 root 依赖树
+#   （实测 36,965 文件 / 633MB，是 tests 自身 720 文件 / 37MB 的 51 倍），
+#   而本机 pnpm store 与 worktree 同在 E: 机械盘（TOSHIBA DT01ACA200 HDD），
+#   同盘读 store + 写 node_modules 抢同一磁头 → HDD IO 长时间打满。
+#   2026-10-28 实战踩过（E: 盘 IO 被灌满，需 kill 进程 + 清半成品）。
+#   - 顺带：根目录装还会把 tests 吸进 workspace，vitest 装不进 tests/
+# 💡 更省：不需要「合并前代码」基线时，直接在主仓库 cd tests 跑 vitest 即可
+#   （vitest.config 的 alias 指向 ../open-sse、../src），worktree 根本不用装依赖。
 
 # 两侧同参数跑（cd tests 后）：
 npx vitest run unit translator --reporter=json --outputFile=<绝对路径>.json
