@@ -171,20 +171,15 @@ function getStopReason(detail) {
 }
 
 /**
- * The upstream's own vocabulary, shown next to the normalized reason when it
- * differs (Claude `end_turn`, Gemini `STOP`, …) so the value stays debuggable.
+ * Just the normalized reason — a compact summary, no upstream token. The raw
+ * provider vocabulary (Claude `end_turn`, Gemini `STOP`, …) is already in
+ * Provider Response (Raw), so appending it here added no information the
+ * drawer lacks while stretching the list column wide on every such row.
  */
-function getNativeStopReason(detail) {
-  const native = detail?.response?.native_finish_reason;
-  return typeof native === "string" && native.length > 0 ? native : null;
-}
-
 function formatStopReason(detail) {
   const reason = getStopReason(detail);
   if (!reason) return "—";
-  const label = STOP_REASON_LABELS[reason] || reason;
-  const native = getNativeStopReason(detail);
-  return native && native !== reason ? `${label} (${native})` : label;
+  return STOP_REASON_LABELS[reason] || reason;
 }
 
 /**
@@ -212,9 +207,11 @@ function getStopReasonTone(reason) {
 }
 
 /**
- * One-line reason a request failed, for the list and the drawer header.
- * Error rows keep the upstream message in `response.error`; a stall on the
- * forced-stream path only has `providerResponse.error`, so fall back to it.
+ * One-line reason a request failed, shown only as a hover tooltip on the list's
+ * Stop Reason cell — error rows are rare and the ending reason already says
+ * *what* kind of failure it was, so this does not earn a field of its own; the
+ * full envelope stays in Provider Response (Raw). Falls back to
+ * `providerResponse.error` because a forced-stream stall has nothing else.
  */
 function getErrorMessage(detail) {
   const err = detail?.response?.error;
@@ -522,14 +519,6 @@ export default function RequestDetailsTab({ exchangeRate }) {
                 <span className={cn("font-mono", getStopReasonTone(getStopReason(selectedDetail)))}>
                   {formatStopReason(selectedDetail)}
                 </span>
-              </div>
-              <div className="sm:col-span-2">
-                <span className="text-text-muted">Error:</span>{" "}
-                {getErrorMessage(selectedDetail) ? (
-                  <span className="break-words font-mono text-red-600">{getErrorMessage(selectedDetail)}</span>
-                ) : (
-                  <span className="text-text-muted">—</span>
-                )}
               </div>
               <div>
                 <span className="text-text-muted">Latency:</span>{" "}
