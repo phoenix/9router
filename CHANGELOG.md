@@ -4,6 +4,7 @@
 - **Request details**: record a classified ending reason on every row (`timeout` / `rate_limit` / `auth_error` / `invalid_request` / `upstream_error` / `aborted` / `incomplete` / `empty` / `unknown`) so an error or a dead stream no longer renders a bare em dash in the Stop Reason column; the streaming teardown paths now pass the abort reason into finalize, and a 200 with no terminal token is no longer recorded as a clean `stop`
 - **Request details**: persist the upstream's own error envelope in Provider Response (Raw) for failed requests (status, body, `content-type`, `x-request-id`, URL) instead of an empty object — stalls on the forced-stream path and non-SSE HTML error pages are now recorded as rows at all, where before they left nothing to inspect
 - **Request details**: the drawer shows a one-line `Error` field and renders TTFT as a dash on failed rows (a failure stores a literal 0, which read like an instant first token)
+- **NVIDIA NIM**: prune the model list to what the upstream actually serves — drop `minimaxai/minimax-m2.7`, `minimaxai/minimax-m3`, `deepseek-ai/deepseek-v4-pro`, `deepseek-ai/deepseek-v4-flash` and `z-ai/glm-5.2`, all of which answer HTTP 410 (end of life) and are absent from `/v1/models`, so they only produced dead combo seats
 
 # v0.5.112 (2026-10-28)
 

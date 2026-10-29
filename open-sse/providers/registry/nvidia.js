@@ -22,11 +22,15 @@ export default {
     validateUrl: "https://integrate.api.nvidia.com/v1/models",
   },
   models: [
-    { id: "minimaxai/minimax-m2.7", name: "MiniMax M2.7" },
-    { id: "minimaxai/minimax-m3", name: "MiniMax M3" },
-    { id: "z-ai/glm-5.2", name: "GLM 5.2" },
-    { id: "deepseek-ai/deepseek-v4-pro", name: "DeepSeek V4 Pro" },
-    { id: "deepseek-ai/deepseek-v4-flash", name: "DeepSeek V4 Flash" },
+    // Pruned to what NIM actually serves. Each of these returned HTTP 410
+    // "reached its end of life" and is absent from /v1/models, so keeping them
+    // only produced dead combo seats, 69s retry budgets and 410 rows in the
+    // dashboard:
+    //   minimaxai/minimax-m2.7        EOL 2026-07-27
+    //   deepseek-ai/deepseek-v4-pro   EOL 2026-08-07
+    //   deepseek-ai/deepseek-v4-flash EOL 2026-08-07
+    //   z-ai/glm-5.2                  EOL 2026-08-21
+    //   minimaxai/minimax-m3          EOL 2026-09-09
     { id: "moonshotai/kimi-k2.6", name: "Kimi K2.6" },
     { id: "nvidia/nemotron-3-ultra-550b-a55b", name: "Nemotron 3 Ultra" },
     { id: "nvidia/nv-embedqa-e5-v5", name: "NV EmbedQA E5 v5", kind: "embedding" },
