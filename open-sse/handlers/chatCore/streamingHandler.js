@@ -7,6 +7,7 @@ import { HTTP_STATUS, STREAM_STALL_TIMEOUT_MS } from "../../config/runtimeConfig
 import { buildAbortedResponsesTerminalBytes } from "../../utils/responsesStreamHelpers.js";
 import { buildStreamErrorBytes } from "../../utils/streamHelpers.js";
 import { buildRequestDetail, extractRequestConfig, saveUsageStats, formatDoneLine } from "./requestDetail.js";
+import { classifyFailureReason, classifySuccessReason } from "../../utils/stopReason.js";
 import { saveRequestDetail } from "@/lib/usageDb.js";
 import { SSE_HEADERS_CORS as SSE_HEADERS } from "../../utils/sseConstants.js";
 import { upstreamResponseHeaders } from "../../utils/upstreamHeaders.js";
@@ -75,6 +76,26 @@ export async function handleStreamingResponse({ providerResponse, provider, mode
     if (log?.errorLine) log.errorLine(reqTag, "✗", `BLOCKED ${status} · ${provider}/${model} · non-SSE (${upstreamContentType})\n    ${shortMsg}`);
     else console.warn(`[STREAM] ${provider} | ${model} | blocked pipe: ${shortMsg} [${status}]`);
     streamController?.handleError?.(new Error(`upstream non-SSE: ${status}`));
+    // Record the row: an HTML error page used to be returned to the client with
+    // status:"error" nowhere to be found, so the drawer showed no request at all.
+    const blockedEnding = classifyFailureReason({ status, message: shortMsg });
+    saveRequestDetail(buildRequestDetail({
+      provider, model, connectionId,
+      latency: { ttft: 0, total: Date.now() - requestStartTime },
+      tokens: { prompt_tokens: 0, completion_tokens: 0 },
+      request: extractRequestConfig(body, stream),
+      providerRequest: finalBody || translatedBody || null,
+      providerResponse: { error: shortMsg, status, contentType: upstreamContentType, raw: bodyText.slice(0, 2000) },
+      response: {
+        error: `[${status}]: ${shortMsg}`,
+        status,
+        thinking: null,
+        finish_reason: blockedEnding.reason,
+        native_finish_reason: blockedEnding.native,
+      },
+      pxpipe,
+      status: "error"
+    }, { endpoint: clientRawRequest?.endpoint || null })).catch(() => {});
     return {
       success: false,
       response: new Response(JSON.stringify({ error: { message: `[${status}]: ${shortMsg}` } }), {
@@ -137,6 +158,16 @@ export function buildOnStreamComplete({ provider, model, connectionId, apiKey, r
     const finishReason = contentObj?.finishReason || null;
     const nativeFinishReason = contentObj?.nativeFinishReason || null;
 
+    // A stream that ended without an upstream terminal token is NOT a clean stop.
+    // `abortReason` is set by the teardown paths (stall watchdog, upstream error,
+    // client hang-up); absent one we still distinguish "answered but never
+    // terminated" from "nothing at all" instead of leaving the field blank.
+    const ending = finishReason
+      ? { reason: finishReason, native: nativeFinishReason }
+      : contentObj?.abortReason
+        ? classifyFailureReason({ message: contentObj.abortReason })
+        : classifySuccessReason(null, contentObj?.content);
+
     saveRequestDetail(buildRequestDetail({
       provider, model, connectionId,
       latency,
@@ -148,8 +179,8 @@ export function buildOnStreamComplete({ provider, model, connectionId, apiKey, r
         content: safeContent,
         thinking: safeThinking,
         type: "streaming",
-        ...(finishReason ? { finish_reason: finishReason } : {}),
-        ...(nativeFinishReason ? { native_finish_reason: nativeFinishReason } : {})
+        finish_reason: ending.reason,
+        ...(ending.native ? { native_finish_reason: ending.native } : {})
       },
       pxpipe,
       status: "success"

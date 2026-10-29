@@ -3,6 +3,7 @@ import { restoreToolNames } from "../../utils/opencodeFingerprint.js";
 import { createErrorResult } from "../../utils/error.js";
 import { HTTP_STATUS, STREAM_STALL_TIMEOUT_MS } from "../../config/runtimeConfig.js";
 import { drainWithTTFT, resolveLatency } from "./sseToJsonDrain.js";
+import { ENDING_REASON, classifySuccessReason } from "../../utils/stopReason.js";
 import { FORMATS } from "../../translator/formats.js";
 import { openAICompletionToClaudeMessage } from "../../translator/concerns/claudeMessage.js";
 import { PROVIDERS } from "../../config/providers.js";
@@ -213,7 +214,30 @@ export async function handleForcedSSEToJson({ providerResponse, sourceFormat, ta
     stallTimeoutMs: idleTimeoutMs
   });
   if (drained.stalled) {
-    return createErrorResult(HTTP_STATUS.GATEWAY_TIMEOUT, "Upstream stream stalled while assembling non-streaming response");
+    // This path used to return an error Response and persist NOTHING, so a stalled
+    // forced-stream request left no row in the drawer at all. Record it with the
+    // reason, so "where did my request go?" has an answer.
+    const stallMessage = "Upstream stream stalled while assembling non-streaming response";
+    saveRequestDetail(buildRequestDetail({
+      ...ctx,
+      latency: { ttft: drained.ttft || 0, total: Date.now() - requestStartTime },
+      tokens: { prompt_tokens: 0, completion_tokens: 0 },
+      providerResponse: {
+        error: stallMessage,
+        status: HTTP_STATUS.GATEWAY_TIMEOUT,
+        timeoutMs: idleTimeoutMs,
+        bytesReceived: drained.bytes ?? null,
+      },
+      response: {
+        error: stallMessage,
+        status: HTTP_STATUS.GATEWAY_TIMEOUT,
+        thinking: null,
+        finish_reason: ENDING_REASON.TIMEOUT,
+        native_finish_reason: `stall timeout ${idleTimeoutMs}ms`,
+      },
+      status: "error"
+    }, { endpoint: clientRawRequest?.endpoint || null })).catch(() => {});
+    return createErrorResult(HTTP_STATUS.GATEWAY_TIMEOUT, stallMessage);
   }
   const sseText = drained.text;
   // buildRequestDetail's ctx carries the latency; keep it alongside so both
@@ -363,14 +387,19 @@ export async function handleForcedSSEToJson({ providerResponse, sourceFormat, ta
     saveUsageStats({ provider, model, tokens: usage, connectionId, apiKey, endpoint: clientRawRequest?.endpoint, silent: true });
     if (log?.line) log.line(reqTag, "📊", formatDoneLine({ usage, latency }));
 
+    const parsedContent = parsed.choices?.[0]?.message?.content || null;
+    const parsedEnding = parsed.choices?.[0]?.finish_reason
+      ? { reason: parsed.choices[0].finish_reason, native: null }
+      : classifySuccessReason(null, typeof parsedContent === "string" ? parsedContent : "");
     saveRequestDetail(buildRequestDetail({
       ...ctx,
       latency,
       tokens: usage,
       response: {
-        content: parsed.choices?.[0]?.message?.content || null,
+        content: parsedContent,
         thinking: parsed.choices?.[0]?.message?.reasoning_content || null,
-        finish_reason: parsed.choices?.[0]?.finish_reason || "unknown"
+        finish_reason: parsedEnding.reason,
+        ...(parsedEnding.native ? { native_finish_reason: parsedEnding.native } : {})
       },
       status: "success"
     }, { endpoint: clientRawRequest?.endpoint || null })).catch(() => {});

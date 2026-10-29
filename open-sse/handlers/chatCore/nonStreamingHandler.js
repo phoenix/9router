@@ -12,7 +12,7 @@ import { buildRequestDetail, extractRequestConfig, extractUsageFromResponse, sav
 import { appendRequestLog, saveRequestDetail } from "@/lib/usageDb.js";
 import { decloakToolNames } from "../../utils/claudeCloaking.js";
 import { restoreToolNames } from "../../utils/opencodeFingerprint.js";
-import { stopReasonFromBody } from "../../utils/stopReason.js";
+import { stopReasonFromBody, classifySuccessReason } from "../../utils/stopReason.js";
 import { ROLE, RESPONSES_ITEM } from "../../translator/schema/index.js";
 
 /**
@@ -342,6 +342,11 @@ export async function handleNonStreamingResponse({ providerResponse, provider, m
   // OpenAI, but a Claude/Gemini/Responses client gets a body with no `choices` at
   // all and used to record a literal "unknown".
   const stopInfo = stopReasonFromBody(translatedResponse);
+  const answerText = translatedResponse?.choices?.[0]?.message?.content || translatedResponse?.content || null;
+  // A 200 whose body names no stop reason is not a clean `stop`. classify it
+  // explicitly (answered-but-unterminated vs. genuinely empty) so the drawer's
+  // Stop Reason column never shows a bare em dash on a successful row.
+  const ending = classifySuccessReason(stopInfo, typeof answerText === "string" ? answerText : "");
   saveRequestDetail(buildRequestDetail({
     provider, model, connectionId,
     latency: { ttft: totalLatency, total: totalLatency },
@@ -350,10 +355,10 @@ export async function handleNonStreamingResponse({ providerResponse, provider, m
     providerRequest: finalBody || translatedBody || null,
     providerResponse: responseBody || null,
     response: {
-      content: translatedResponse?.choices?.[0]?.message?.content || translatedResponse?.content || null,
+      content: answerText,
       thinking: translatedResponse?.choices?.[0]?.message?.reasoning_content || translatedResponse?.reasoning_content || null,
-      finish_reason: stopInfo?.reason || "unknown",
-      ...(stopInfo?.native ? { native_finish_reason: stopInfo.native } : {})
+      finish_reason: ending.reason,
+      ...(ending.native ? { native_finish_reason: ending.native } : {})
     },
     pxpipe,
     status: "success"

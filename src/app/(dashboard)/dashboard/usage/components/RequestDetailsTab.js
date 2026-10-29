@@ -153,6 +153,16 @@ const STOP_REASON_LABELS = {
   length: "length",
   tool_calls: "tool_calls",
   content_filter: "content_filter",
+  // Failure / abnormal endings (open-sse/utils/stopReason.js ENDING_REASON).
+  timeout: "timeout",
+  rate_limit: "rate_limit",
+  auth_error: "auth_error",
+  invalid_request: "invalid_request",
+  upstream_error: "upstream_error",
+  aborted: "aborted",
+  incomplete: "incomplete",
+  empty: "empty",
+  unknown: "unknown",
 };
 
 function getStopReason(detail) {
@@ -177,12 +187,45 @@ function formatStopReason(detail) {
   return native && native !== reason ? `${label} (${native})` : label;
 }
 
+/**
+ * TTFT for display. A failed request never received a first byte — it stores a
+ * literal 0, which reads like an instant answer. Show a dash instead so the
+ * column cannot be mistaken for a measurement.
+ */
+function formatTtft(detail) {
+  if (detail?.status === "error") return "—";
+  const ttft = detail?.latency?.ttft;
+  return Number.isFinite(ttft) ? `${ttft}ms` : "—";
+}
+
 /** Content-filter and truncation are abnormal endings; color them accordingly. */
 function getStopReasonTone(reason) {
   if (reason === "stop" || reason === "tool_calls") return "text-text-main";
   if (reason === "length") return "text-amber-600";
   if (reason === "content_filter") return "text-red-600";
+  // Endings that never produced a terminal token — a timeout or a dead upstream
+  // is the operator's real signal, so make it red rather than muted.
+  if (reason === "timeout" || reason === "upstream_error" || reason === "auth_error") return "text-red-600";
+  if (reason === "rate_limit" || reason === "incomplete" || reason === "empty" || reason === "aborted") return "text-amber-600";
+  if (reason === "invalid_request") return "text-red-600";
   return "text-text-main";
+}
+
+/**
+ * One-line reason a request failed, for the list and the drawer header.
+ * Error rows keep the upstream message in `response.error`; a stall on the
+ * forced-stream path only has `providerResponse.error`, so fall back to it.
+ */
+function getErrorMessage(detail) {
+  const err = detail?.response?.error;
+  if (typeof err === "string" && err.trim()) return err.trim();
+  if (err && typeof err === "object") {
+    const m = err.message || err.error || null;
+    if (typeof m === "string" && m.trim()) return m.trim();
+  }
+  const raw = detail?.providerResponse?.error;
+  if (typeof raw === "string" && raw.trim()) return raw.trim();
+  return null;
 }
 
 export default function RequestDetailsTab({ exchangeRate }) {
@@ -395,14 +438,17 @@ export default function RequestDetailsTab({ exchangeRate }) {
                     </td>
                     <td className="p-4 text-sm text-text-muted">
                       <div className="flex flex-col gap-0.5">
-                        <div>TTFT: <span className="font-mono">{detail.latency?.ttft || 0}ms</span></div>
+                        <div>TTFT: <span className="font-mono">{formatTtft(detail)}</span></div>
                         <div>Total: <span className="font-mono">{detail.latency?.total || 0}ms</span></div>
                       </div>
                     </td>
                     <td className="p-4 text-sm text-text-main text-right font-mono whitespace-nowrap">
                       {formatTokensPerSecond(getTokensPerSecond(detail.tokens, detail.latency))}
                     </td>
-                    <td className={cn("p-4 text-sm text-right font-mono whitespace-nowrap", getStopReasonTone(getStopReason(detail)))}>
+                    <td
+                      className={cn("p-4 text-sm text-right font-mono whitespace-nowrap", getStopReasonTone(getStopReason(detail)))}
+                      title={getErrorMessage(detail) || undefined}
+                    >
                       {formatStopReason(detail)}
                     </td>
                     <td className="p-4 text-sm text-text-main text-right font-mono whitespace-nowrap">
@@ -477,10 +523,18 @@ export default function RequestDetailsTab({ exchangeRate }) {
                   {formatStopReason(selectedDetail)}
                 </span>
               </div>
+              <div className="sm:col-span-2">
+                <span className="text-text-muted">Error:</span>{" "}
+                {getErrorMessage(selectedDetail) ? (
+                  <span className="break-words font-mono text-red-600">{getErrorMessage(selectedDetail)}</span>
+                ) : (
+                  <span className="text-text-muted">—</span>
+                )}
+              </div>
               <div>
                 <span className="text-text-muted">Latency:</span>{" "}
                 <span className="text-text-main font-mono">
-                  TTFT {selectedDetail.latency?.ttft || 0}ms / Total {selectedDetail.latency?.total || 0}ms
+                  TTFT {formatTtft(selectedDetail)} / Total {selectedDetail.latency?.total || 0}ms
                 </span>
               </div>
               <div>

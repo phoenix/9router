@@ -16,6 +16,7 @@ import { trackPendingRequest, appendRequestLog, saveRequestDetail } from "@/lib/
 import { getExecutor } from "../executors/index.js";
 import { supportsGrokCliReasoningEffort } from "../config/grokCli.js";
 import { buildRequestDetail, extractRequestConfig } from "./chatCore/requestDetail.js";
+import { classifyFailureReason } from "../utils/stopReason.js";
 import { handleForcedSSEToJson } from "./chatCore/sseToJsonHandler.js";
 import { shouldStreamJsonObjectRequest, applyStreamingForJsonObject } from "../config/jsonObjectStreaming.js";
 import { handleNonStreamingResponse } from "./chatCore/nonStreamingHandler.js";
@@ -442,14 +443,40 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     reqLogger.logTargetRequest(providerUrl, providerHeaders, finalBody);
   } catch (error) {
     trackPendingRequest(model, provider, connectionId, false, true);
-    appendRequestLog({ model, provider, connectionId, status: `FAILED ${error.name === "AbortError" ? 499 : HTTP_STATUS.BAD_GATEWAY}` }).catch(() => { });
+    const failureStatus = error.name === "AbortError" ? 499 : HTTP_STATUS.BAD_GATEWAY;
+    appendRequestLog({ model, provider, connectionId, status: `FAILED ${failureStatus}` }).catch(() => { });
+    // Executor threw, so there is no response object to read. Keep whatever the
+    // error itself exposes: an error row used to store an empty providerResponse
+    // and a bare "fetch connect timeout" string, which left the drawer with
+    // nothing to diagnose from (which URL, which cause, how many attempts).
+    const failureText = error.message || String(error);
     saveRequestDetail(buildRequestDetail({
       provider, model, connectionId,
       latency: { ttft: 0, total: Date.now() - requestStartTime },
       tokens: { prompt_tokens: 0, completion_tokens: 0 },
       request: extractRequestConfig(body, stream),
       providerRequest: translatedBody || null,
-      response: { error: error.message || String(error), status: error.name === "AbortError" ? 499 : 502, thinking: null },
+      providerResponse: {
+        error: failureText,
+        name: error.name || null,
+        code: error.cause?.code || error.code || null,
+        cause: error.cause?.message || null,
+        status: failureStatus,
+      },
+      response: {
+        error: failureText,
+        status: failureStatus,
+        thinking: null,
+        ...(() => {
+          const ending = classifyFailureReason({
+            status: failureStatus,
+            message: failureText,
+            aborted: error.name === "AbortError",
+            code: error.cause?.code || error.code || "",
+          });
+          return { finish_reason: ending.reason, native_finish_reason: ending.native };
+        })(),
+      },
       pxpipe: pxpipeSummary,
       status: "error"
     })).catch(() => { });
@@ -516,7 +543,8 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   // Provider returned error
   if (!providerResponse.ok) {
     trackPendingRequest(model, provider, connectionId, false, true);
-    const { statusCode, message, resetsAtMs } = await parseUpstreamError(providerResponse, executor);
+    const { statusCode, message, resetsAtMs, raw } = await parseUpstreamError(providerResponse, executor);
+    const upstreamEnding = classifyFailureReason({ status: statusCode, message });
     appendRequestLog({ model, provider, connectionId, status: `FAILED ${statusCode}` }).catch(() => { });
     saveRequestDetail(buildRequestDetail({
       provider, model, connectionId,
@@ -524,7 +552,27 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
       tokens: { prompt_tokens: 0, completion_tokens: 0 },
       request: extractRequestConfig(body, stream),
       providerRequest: finalBody || translatedBody || null,
-      response: { error: message, status: statusCode, thinking: null },
+      // Store what the provider actually answered. `message` is our normalized
+      // summary; `raw` keeps the upstream's own envelope (type/code/request id).
+      // Provider Response (Raw) used to be empty on every error row, so the
+      // drawer had nothing to show for the one case operators care about most.
+      providerResponse: {
+        error: message,
+        status: statusCode,
+        raw: raw || null,
+        headers: {
+          "content-type": providerResponse.headers?.get?.("content-type") || null,
+          "x-request-id": providerResponse.headers?.get?.("x-request-id") || null,
+        },
+        url: providerUrl || null,
+      },
+      response: {
+        error: message,
+        status: statusCode,
+        thinking: null,
+        finish_reason: upstreamEnding.reason,
+        native_finish_reason: upstreamEnding.native,
+      },
       pxpipe: pxpipeSummary,
       status: "error"
     })).catch(() => { });

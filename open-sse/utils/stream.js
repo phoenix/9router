@@ -93,6 +93,10 @@ export function createSSEStream(options = {}) {
   // only visible in the native chunks we parse here, not in the client's copy.
   let stopReason = null;
   let nativeStopReason = null;
+  // Set only when the stream is torn down rather than completed (stall, upstream
+  // error, client hang-up). Without it a killed 200 stream recorded a `success`
+  // row with no finish_reason at all, which rendered as an em dash in the drawer.
+  let abortReason = null;
   const recordStopReason = (chunk) => {
     const info = parseFinishReason(chunk);
     if (info) {
@@ -144,10 +148,18 @@ export function createSSEStream(options = {}) {
         content: accumulatedContent,
         thinking: accumulatedThinking,
         finishReason: stopReason,
-        nativeFinishReason: nativeStopReason || null
+        nativeFinishReason: nativeStopReason || null,
+        // Only present when the stream died before the upstream named a terminal
+        // token — keeps the clean-completion payload shape unchanged.
+        ...(abortReason ? { abortReason } : {})
       }, finalUsage, ttftAt);
     }
   };
+
+  // Called from the teardown paths (stall watchdog, upstream error, client hang-up)
+  // BEFORE finalize() runs, so the row can explain why it ended. Attached to the
+  // TransformStream right after it is constructed (see stream.abortReason below).
+  const noteAbortReason = (reason) => { if (!abortReason) abortReason = reason || "aborted"; };
 
   // Emit the deferred response.completed now — at [DONE], or when the watchdog
   // below gives up on a usage trailer that never arrives.
@@ -608,6 +620,9 @@ export function createSSEStream(options = {}) {
   // persisting usage. streamHandler calls this during teardown. finalizeStream()
   // is idempotent, so the normal flush() path is unaffected.
   stream.finalize = finalizeStream;
+  // The teardown reason, recorded before finalize() so onStreamComplete can
+  // distinguish "stream died" from "upstream finished cleanly".
+  stream.abortReason = noteAbortReason;
   return stream;
 }
 
